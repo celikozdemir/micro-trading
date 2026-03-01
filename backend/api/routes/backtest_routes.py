@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -14,10 +15,15 @@ from backend.db.session import get_session
 
 router = APIRouter()
 
+# Max ticks to load per backtest request — prevents OOM on small servers
+MAX_TICKS = 200_000
+# Default lookback if no date range given
+DEFAULT_HOURS = 2
+
 
 class BacktestRequest(BaseModel):
     symbol: str = "BTCUSDT"
-    start: str | None = None  # ISO datetime string
+    start: str | None = None
     end: str | None = None
 
 
@@ -27,9 +33,13 @@ def _parse_dt(s: str | None) -> datetime | None:
     return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
 
 
-def _build_result(trades: list[BacktestTrade], config: dict) -> dict:
+def _build_result(trades: list[BacktestTrade], config: dict, tick_count: int, capped: bool) -> dict:
+    base: dict = {"tick_count": tick_count}
+    if capped:
+        base["message"] = f"Loaded last {DEFAULT_HOURS}h of data ({tick_count:,} ticks). Use start/end to specify a range."
+
     if not trades:
-        return {"total_trades": 0, "message": "No trades generated — adjust thresholds"}
+        return {**base, "total_trades": 0, "message": base.get("message", "No trades generated — adjust thresholds")}
 
     wins = [t for t in trades if t.net_pnl_usd > 0]
     equity, peak, max_dd = 0.0, 0.0, 0.0
@@ -46,6 +56,7 @@ def _build_result(trades: list[BacktestTrade], config: dict) -> dict:
         reasons[t.exit_reason] = reasons.get(t.exit_reason, 0) + 1
 
     return {
+        **base,
         "total_trades": len(trades),
         "wins": len(wins),
         "losses": len(trades) - len(wins),
@@ -73,13 +84,36 @@ def _build_result(trades: list[BacktestTrade], config: dict) -> dict:
     }
 
 
+def _run_strategy(ticks: list, config: dict) -> list[BacktestTrade]:
+    """CPU-bound — runs in a thread so it doesn't block the event loop."""
+    strategy = BurstMomentumStrategy(config, FillModel())
+    for event in ticks:
+        strategy.on_event(event)
+    return strategy.trades
+
+
 @router.post("/backtest")
 async def run_backtest(req: BacktestRequest, session: AsyncSession = Depends(get_session)):
     config = load_trading_config()
-    strategy = BurstMomentumStrategy(config, FillModel())
+
+    start = _parse_dt(req.start)
+    end = _parse_dt(req.end)
+    capped = False
+
+    # Default to last DEFAULT_HOURS if no range given — prevents loading millions of rows
+    if start is None and end is None:
+        start = datetime.now(timezone.utc) - timedelta(hours=DEFAULT_HOURS)
+        capped = True
+
+    # Load ticks from DB (async I/O)
     replayer = TickReplayer(session)
+    ticks: list = []
+    async for event in replayer.replay(req.symbol, start, end):
+        ticks.append(event)
+        if len(ticks) >= MAX_TICKS:
+            break
 
-    async for event in replayer.replay(req.symbol, _parse_dt(req.start), _parse_dt(req.end)):
-        strategy.on_event(event)
+    # Run CPU-bound strategy loop in a thread — keeps event loop free
+    trades = await asyncio.to_thread(_run_strategy, ticks, config)
 
-    return _build_result(strategy.trades, config)
+    return _build_result(trades, config, len(ticks), capped)
