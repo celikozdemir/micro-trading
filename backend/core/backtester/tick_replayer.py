@@ -56,9 +56,12 @@ class TickReplayer:
         symbol: str,
         start: datetime | None = None,
         end: datetime | None = None,
+        limit: int | None = None,
     ) -> AsyncIterator[BookTick | AggTrade]:
-        book_ticks = await self._load_book_ticks(symbol, start, end)
-        agg_trades = await self._load_agg_trades(symbol, start, end)
+        # Split limit evenly between the two streams; None = no cap
+        half = (limit // 2) if limit else None
+        book_ticks = await self._load_book_ticks(symbol, start, end, half)
+        agg_trades = await self._load_agg_trades(symbol, start, end, half)
 
         # Heap entries: (timestamp_ms, stream_priority, seq, event)
         # stream_priority: 0=book 1=trade — book tick goes first at same ms
@@ -76,7 +79,7 @@ class TickReplayer:
             yield event
 
     async def _load_book_ticks(
-        self, symbol: str, start: datetime | None, end: datetime | None
+        self, symbol: str, start: datetime | None, end: datetime | None, limit: int | None
     ) -> list[BookTick]:
         stmt = (
             select(BookTickModel)
@@ -87,11 +90,13 @@ class TickReplayer:
             stmt = stmt.where(BookTickModel.timestamp_exchange >= start)
         if end:
             stmt = stmt.where(BookTickModel.timestamp_exchange <= end)
+        if limit:
+            stmt = stmt.limit(limit)
         result = await self.session.execute(stmt)
         return [_book_tick_from_row(r) for r in result.scalars()]
 
     async def _load_agg_trades(
-        self, symbol: str, start: datetime | None, end: datetime | None
+        self, symbol: str, start: datetime | None, end: datetime | None, limit: int | None
     ) -> list[AggTrade]:
         stmt = (
             select(AggTradeModel)
@@ -102,5 +107,7 @@ class TickReplayer:
             stmt = stmt.where(AggTradeModel.timestamp_exchange >= start)
         if end:
             stmt = stmt.where(AggTradeModel.timestamp_exchange <= end)
+        if limit:
+            stmt = stmt.limit(limit)
         result = await self.session.execute(stmt)
         return [_agg_trade_from_row(r) for r in result.scalars()]

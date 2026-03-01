@@ -233,11 +233,8 @@ async def run(symbol: str, top: int, min_trades: int, start: datetime | None, en
     async with AsyncSessionLocal() as session:
         replayer = TickReplayer(session)
         ticks: list[BookTick | AggTrade] = []
-        async for event in replayer.replay(symbol, start=start, end=end):
+        async for event in replayer.replay(symbol, start=start, end=end, limit=max_ticks):
             ticks.append(event)
-            if len(ticks) >= max_ticks:
-                log.info(f"  Reached cap of {max_ticks:,} ticks — stopping load.")
-                break
     log.info(f"Loaded {len(ticks):,} ticks into memory")
 
     if not ticks:

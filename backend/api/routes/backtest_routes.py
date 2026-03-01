@@ -105,13 +105,11 @@ async def run_backtest(req: BacktestRequest, session: AsyncSession = Depends(get
         start = datetime.now(timezone.utc) - timedelta(hours=DEFAULT_HOURS)
         capped = True
 
-    # Load ticks from DB (async I/O)
+    # Load ticks from DB (async I/O) — limit pushed to SQL to avoid loading millions of rows
     replayer = TickReplayer(session)
     ticks: list = []
-    async for event in replayer.replay(req.symbol, start, end):
+    async for event in replayer.replay(req.symbol, start, end, limit=MAX_TICKS):
         ticks.append(event)
-        if len(ticks) >= MAX_TICKS:
-            break
 
     # Run CPU-bound strategy loop in a thread with a hard timeout
     try:
