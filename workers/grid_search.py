@@ -8,6 +8,8 @@ Usage:
     python -m workers.grid_search --symbol BTCUSDT
     python -m workers.grid_search --symbol ETHUSDT --top 20
     python -m workers.grid_search --symbol BTCUSDT --min-trades 5
+    python -m workers.grid_search --symbol BTCUSDT --start 2026-03-01T16:57:00 --end 2026-03-01T17:57:00
+    python -m workers.grid_search --symbol BTCUSDT --max-ticks 50000
 """
 
 from __future__ import annotations
@@ -220,19 +222,22 @@ def _print_table(results: list[GridResult], top: int) -> None:
     print()
 
 
-async def run(symbol: str, top: int, min_trades: int, start: datetime | None, end: datetime | None) -> None:
+async def run(symbol: str, top: int, min_trades: int, start: datetime | None, end: datetime | None, max_ticks: int = 100_000) -> None:
     # Import here to avoid circular import at module level
     from backend.config import load_trading_config
 
     base_config = load_trading_config()
 
     # ── Load ticks once ──────────────────────────────────────────────────────
-    log.info(f"Loading ticks for {symbol} from DB (once)…")
+    log.info(f"Loading ticks for {symbol} from DB (once, cap={max_ticks:,})…")
     async with AsyncSessionLocal() as session:
         replayer = TickReplayer(session)
         ticks: list[BookTick | AggTrade] = []
         async for event in replayer.replay(symbol, start=start, end=end):
             ticks.append(event)
+            if len(ticks) >= max_ticks:
+                log.info(f"  Reached cap of {max_ticks:,} ticks — stopping load.")
+                break
     log.info(f"Loaded {len(ticks):,} ticks into memory")
 
     if not ticks:
@@ -265,12 +270,13 @@ async def main() -> None:
     parser.add_argument("--min-trades", type=int, default=3, help="Minimum trades to include a result")
     parser.add_argument("--start", default=None, help="ISO datetime e.g. 2026-03-01T09:00:00")
     parser.add_argument("--end", default=None, help="ISO datetime e.g. 2026-03-01T10:00:00")
+    parser.add_argument("--max-ticks", type=int, default=100_000, help="Max ticks to load (default 100k, prevents OOM)")
     args = parser.parse_args()
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc) if args.start else None
     end = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc) if args.end else None
 
-    await run(args.symbol, args.top, args.min_trades, start, end)
+    await run(args.symbol, args.top, args.min_trades, start, end, args.max_ticks)
 
 
 if __name__ == "__main__":
