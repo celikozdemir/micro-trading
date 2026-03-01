@@ -113,7 +113,13 @@ async def run_backtest(req: BacktestRequest, session: AsyncSession = Depends(get
         if len(ticks) >= MAX_TICKS:
             break
 
-    # Run CPU-bound strategy loop in a thread — keeps event loop free
-    trades = await asyncio.to_thread(_run_strategy, ticks, config)
+    # Run CPU-bound strategy loop in a thread with a hard timeout
+    try:
+        trades = await asyncio.wait_for(
+            asyncio.to_thread(_run_strategy, ticks, config),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        return {"total_trades": 0, "message": "Backtest timed out (>30s). Use a narrower date range."}
 
     return _build_result(trades, config, len(ticks), capped)
