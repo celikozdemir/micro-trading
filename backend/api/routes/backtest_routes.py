@@ -15,10 +15,10 @@ from backend.db.session import get_session
 
 router = APIRouter()
 
-# Max ticks to load per backtest request — prevents OOM on small servers
-MAX_TICKS = 200_000
+# Max ticks to load per backtest request — keeps memory safe on small servers
+MAX_TICKS = 50_000
 # Default lookback if no date range given
-DEFAULT_HOURS = 2
+DEFAULT_HOURS = 1
 
 
 class BacktestRequest(BaseModel):
