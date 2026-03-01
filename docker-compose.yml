@@ -1,0 +1,35 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: algo_db
+    environment:
+      POSTGRES_USER: ${DB_USER:-algo}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-algo_secret}
+      POSTGRES_DB: ${DB_NAME:-algo_trading}
+    ports:
+      - "5435:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-algo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: algo_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  db_data:
+  redis_data:

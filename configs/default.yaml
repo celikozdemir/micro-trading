@@ -1,0 +1,34 @@
+mode: observe
+venue: binance_usdm_futures
+symbols:
+- BTCUSDT
+- ETHUSDT
+data_streams:
+- bookTicker
+- aggTrade
+- markPrice_1s
+strategy:
+  type: burst_momentum
+  window_ms: 250
+  trade_count_trigger: 20
+  move_bps_trigger: 5
+  entry_qty:
+    BTCUSDT: 0.001
+    ETHUSDT: 0.01
+  exit:
+    max_hold_ms: 300
+    take_profit_bps: 15
+    stop_loss_bps: 5
+  cooldown_ms: 1000
+risk:
+  max_trades_per_min: 60
+  daily_loss_usd: 50
+  max_consecutive_losses: 3
+  max_spread_bps: 6
+  max_ws_lag_ms: 300
+  reconnect_storm:
+    max_reconnects: 5
+    window_min: 10
+telemetry:
+  flush_interval_s: 1
+  latency_log_interval_s: 60
