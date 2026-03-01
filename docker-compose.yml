@@ -2,6 +2,7 @@ services:
   db:
     image: timescale/timescaledb:latest-pg16
     container_name: algo_db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-algo}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-algo_secret}
@@ -19,6 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: algo_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:

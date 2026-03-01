@@ -1,0 +1,17 @@
+[Unit]
+Description=Algo Trading Recorder (Binance WS → TimescaleDB)
+After=network.target docker.service algo-api.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/algo-trading
+ExecStart=/home/ubuntu/algo-trading/.venv/bin/python -m workers.micro_runner
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
