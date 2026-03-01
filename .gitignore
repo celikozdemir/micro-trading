@@ -15,8 +15,8 @@ build/
 .ruff_cache/
 .pytest_cache/
 
-# Data
-data/
+# Data (top-level only, not backend/core/data/)
+/data/
 *.csv
 *.parquet
 *.h5
