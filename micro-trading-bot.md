@@ -362,6 +362,8 @@ risk:
 
 
 source /Users/celikozdemir/Projects/algo-trading/.venv/bin/activate
+source .venv/bin/activate
+
 uvicorn backend.main:app --reload
 # Check how much data you have
 python -m workers.run_backtest --symbol BTCUSDT --diagnose
@@ -372,4 +374,64 @@ python -m workers.run_backtest --symbol BTCUSDT
 # Or sweep the full grid
 python -m workers.grid_search --symbol BTCUSDT
 
-ssh -i '/Users/celikozdemir/Library/CloudStorage/Dropbox/Personal/Celik Ozdemir/Binance/aws/micro-trading-key.pem' ubuntu@43.207.164.109
+ssh -i '/Users/celikozdemir/Library/CloudStorage/Dropbox/Personal/Celik Ozdemir/Binance/aws/micro-trading-key.pem' ubuntu@13.114.223.56
+
+
+# All three services at once
+sudo systemctl status algo-api algo-recorder
+
+# Press Ctrl+C first to cancel the hanging restart, then:
+sudo systemctl kill -s SIGKILL algo-api
+sudo systemctl start algo-api
+
+# Live logs from recorder
+journalctl -u algo-recorder -f
+
+# Live logs from API
+journalctl -u algo-api -f
+
+# Check Docker containers
+docker ps
+If you're not using systemd yet (still running manually):
+
+
+# See what's running on port 8000
+ss -tlnp | grep 8000
+
+# All Python processes
+ps aux | grep python
+
+# All processes by memory usage
+ps aux --sort=-%mem | head -10
+
+sudo systemctl restart algo-api
+
+
+# Quick check of data range and row counts
+docker exec algo_db psql -U algo -d algo_trading -c "
+SELECT 
+  symbol,
+  COUNT(*) as rows,
+  MIN(timestamp_exchange) as first_tick,
+  MAX(timestamp_exchange) as last_tick
+FROM book_ticks GROUP BY symbol
+UNION ALL
+SELECT 
+  symbol,
+  COUNT(*) as rows,
+  MIN(timestamp_exchange),
+  MAX(timestamp_exchange)
+FROM agg_trades GROUP BY symbol;"
+Once you have a few hours of data that spans a weekday session, run the full grid search with more ticks:
+
+
+
+  python -m workers.grid_search \
+  --symbol BTCUSDT \
+  --start 2026-03-02T14:00:00 \
+  --end 2026-03-02T14:30:00 \
+  --maker
+
+  Ok I want you to do two things.
+  1- Lets build a screener only, that runs the same algorithm and executes the order and only records the transaction, I will keep this running for days and want to see what we can win in a continuous algorithm. You may need to create another table for this.
+  2- Lets also keep recording the data as it is and have a data to backtest. But I need you first to clean our data before the dedublicate action. And let me know how much space would it take in a day. If too much data is created then we should be deleting the previous data after some time. Lets decide this period. Maybe another service to delete the expired period everyday. A week, a month, whichever makes sense.

@@ -9,17 +9,22 @@ data_streams:
 - markPrice_1s
 strategy:
   type: burst_momentum
-  window_ms: 250
-  trade_count_trigger: 20
-  move_bps_trigger: 5
+  window_ms: 250             # burst detection window (ms)
+  trade_count_trigger: 10    # min trades in window — not binding during spikes
+  move_bps_trigger: 5.0      # min mid-price move (bps) to consider entry
+  # Regime gate: only enter when market is "hot".
+  # intensity_filter_trades = min agg_trades in last intensity_filter_window_ms.
+  # 0 = disabled. 600 ≈ 60 trades/sec (spike threshold vs normal ~5/sec).
+  intensity_filter_trades: 600
+  intensity_filter_window_ms: 10000
   entry_qty:
     BTCUSDT: 0.001
     ETHUSDT: 0.01
   exit:
-    max_hold_ms: 300
-    take_profit_bps: 15
-    stop_loss_bps: 5
-  cooldown_ms: 1000
+    max_hold_ms: 2000         # give momentum time to reach TP
+    take_profit_bps: 4.0      # just above maker round-trip floor (4 bps)
+    stop_loss_bps: 5.0        # slightly wider — cuts if direction is wrong
+  cooldown_ms: 500
 risk:
   max_trades_per_min: 60
   daily_loss_usd: 50
