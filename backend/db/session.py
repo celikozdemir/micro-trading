@@ -6,8 +6,9 @@ from backend.config import settings
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=5,
+    connect_args={"server_settings": {"statement_timeout": "30000"}},  # 30s hard kill
 )
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
