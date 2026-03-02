@@ -7,8 +7,8 @@ Requires=docker.service
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/algo-trading
-# Default: taker fill model (conservative). Add --maker for optimistic.
-ExecStart=/home/ubuntu/algo-trading/.venv/bin/python -m workers.paper_trader
+# Maker fill model: 2 bps/side fee, 0 slippage (4 bps round-trip total).
+ExecStart=/home/ubuntu/algo-trading/.venv/bin/python -m workers.paper_trader --maker
 Restart=always
 RestartSec=10
 StandardOutput=journal

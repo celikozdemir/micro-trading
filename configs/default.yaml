@@ -21,14 +21,17 @@ strategy:
     BTCUSDT: 0.001
     ETHUSDT: 0.01
   exit:
-    max_hold_ms: 2000         # give momentum time to reach TP
-    take_profit_bps: 4.0      # just above maker round-trip floor (4 bps)
-    stop_loss_bps: 5.0        # slightly wider — cuts if direction is wrong
+    # Maker fill model cost: 2 bps fee/side × 2 = 4 bps round-trip (no slippage).
+    # Break-even with 62% win rate: TP net = 10-4 = +6 bps, SL net = -(6+4) = -10 bps.
+    # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
+    max_hold_ms: 3000         # 3 s is enough to reach 10 bps in a real spike
+    take_profit_bps: 10.0     # gross TP; net = +6 bps after 4 bps maker cost
+    stop_loss_bps: 6.0        # gross SL; net = -10 bps — tight but not noise-prone
   cooldown_ms: 500
 risk:
   max_trades_per_min: 60
   daily_loss_usd: 50
-  max_consecutive_losses: 3
+  max_consecutive_losses: 5
   max_spread_bps: 6
   max_ws_lag_ms: 300
   reconnect_storm:
