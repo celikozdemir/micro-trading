@@ -40,22 +40,21 @@ MAKER_ROUND_TRIP_BPS = 4.0
 
 
 # ── Parameter grid ────────────────────────────────────────────────────────────
-# Adjust these ranges based on your DiagnosticAnalyzer output.
-# Rule of thumb:
-#   trade_count_trigger → p75 to p99 of your window trade-count distribution
-#   move_bps_trigger    → 1.0–5.0 (must see real price movement)
-#   take_profit_bps     → MUST be > 11 bps to beat fees; 12–25 is the sweet spot
-#   stop_loss_bps       → 5–15 (asymmetric stop keeps R:R reasonable)
-#   max_hold_ms         → 200–2000 (shorter = cleaner, longer = more exits)
+# Calibrated from diagnostic data (2026-03-02):
+#   Typical spike burst = 6–9 bps avg_gross during 7k trades/min events.
+#   TP must be BELOW avg_gross to actually trigger — use 3–8 bps range.
+#   SL must be tight (2–5 bps) to cut losses quickly in the hot path.
+#   With maker fills (round-trip = 4 bps): TP > 4 bps is break-even floor.
+#   With taker fills (round-trip = 11 bps): no TP in this grid beats fees.
 
 GRID = {
-    "window_ms":            [250],           # keep fixed — it's the microstructure window
+    "window_ms":            [250],                    # keep fixed — microstructure window
     "trade_count_trigger":  [5, 10, 20, 40, 80],
     "move_bps_trigger":     [1.0, 2.0, 3.5, 5.0],
-    "take_profit_bps":      [12.0, 15.0, 20.0, 30.0],
-    "stop_loss_bps":        [5.0, 8.0, 12.0],
-    "max_hold_ms":          [300, 600, 1000, 2000],
-    "cooldown_ms":          [500],           # keep fixed
+    "take_profit_bps":      [4.0, 5.0, 6.0, 8.0],   # calibrated: spike avg_gross ~6 bps
+    "stop_loss_bps":        [2.0, 3.0, 5.0],         # tight: cut fast if momentum reverses
+    "max_hold_ms":          [500, 1000, 2000],        # removed 300ms — too short for 6 bps
+    "cooldown_ms":          [500],                    # keep fixed
 }
 
 
