@@ -147,6 +147,21 @@ class BurstMomentumStrategy:
         while state.trade_window and state.trade_window[0][0] < cutoff:
             state.trade_window.popleft()
 
+        # Keep mid_history alive using trade price as proxy when book_ticks are sparse.
+        # In production book_ticks and agg_trades interleave at high frequency; in
+        # backtesting with a book_tick cap this keeps velocity detection working.
+        state.mid_history.append((now_ms, at.price))
+        while state.mid_history and state.mid_history[0][0] < cutoff:
+            state.mid_history.popleft()
+
+        # Timeout is time-based — fire it on agg_trade events when no book_tick arrives.
+        # Uses last known book_tick for exit price (stale is acceptable for timeout exits).
+        if state.open_position is not None and state.last_book is not None:
+            hold_ms = now_ms - state.open_position.entry_time_ms
+            if hold_ms >= self.max_hold_ms:
+                self._check_exit(at.symbol, now_ms, state.last_book)
+                return
+
         if state.open_position is None and now_ms > state.cooldown_until_ms:
             self._check_entry(at.symbol, now_ms)
 
