@@ -168,31 +168,51 @@ def _print_retention_recommendation() -> None:
 # ── Cleanup actions ────────────────────────────────────────────────────────────
 
 async def clean_before(cutoff_date: str) -> None:
-    """Delete all market data recorded before cutoff_date (ISO date, e.g. 2026-03-02)."""
+    """
+    Delete all market data recorded before cutoff_date (ISO date, e.g. 2026-03-02).
+
+    Strategy (fastest → slowest):
+      1. TimescaleDB drop_chunks — drops whole chunk files instantly, no row scanning.
+      2. Plain DELETE with statement_timeout disabled — for non-TimescaleDB tables.
+    Never runs COUNT(*) first; large counts time out on pre-dedup datasets.
+    """
     cutoff_dt = datetime.fromisoformat(cutoff_date).replace(tzinfo=timezone.utc)
     print()
     print(f"  Deleting all book_ticks and agg_trades before {cutoff_dt.strftime('%Y-%m-%d %H:%M')} UTC...")
-    print("  This may take a while on large datasets. Do NOT interrupt.")
+    print("  Using TimescaleDB drop_chunks if available, else plain DELETE (no timeout).")
     print()
 
-    async with AsyncSessionLocal() as session:
-        for table in ("book_ticks", "agg_trades"):
-            result = await session.execute(
-                text(f"SELECT COUNT(*) FROM {table} WHERE timestamp_exchange < :cutoff"),
+    from backend.db.session import engine
+
+    for table in ("book_ticks", "agg_trades"):
+        # Use a raw engine connection so we can override statement_timeout
+        async with engine.begin() as conn:
+            # Lift the 30-second timeout for this heavy operation
+            await conn.execute(text("SET statement_timeout = 0"))
+
+            # ── Fast path: TimescaleDB drop_chunks ──────────────────────
+            try:
+                result = await conn.execute(
+                    text(f"SELECT drop_chunks('{table}', older_than => :cutoff::timestamptz)"),
+                    {"cutoff": cutoff_dt.isoformat()},
+                )
+                dropped = result.rowcount
+                print(f"  {table}: dropped {dropped} TimescaleDB chunk(s) ✓  (fast path)")
+                continue
+            except Exception as e:
+                if "drop_chunks" in str(e) or "does not exist" in str(e).lower():
+                    # TimescaleDB not available or table is not a hypertable
+                    pass
+                else:
+                    raise
+
+            # ── Slow path: plain DELETE ──────────────────────────────────
+            print(f"  {table}: running DELETE (no timeout)...")
+            result = await conn.execute(
+                text(f"DELETE FROM {table} WHERE timestamp_exchange < :cutoff"),
                 {"cutoff": cutoff_dt},
             )
-            count = result.scalar()
-            print(f"  {table}: {count:,} rows to delete...")
-
-            if count > 0:
-                await session.execute(
-                    text(f"DELETE FROM {table} WHERE timestamp_exchange < :cutoff"),
-                    {"cutoff": cutoff_dt},
-                )
-                await session.commit()
-                print(f"  {table}: deleted {count:,} rows ✓")
-            else:
-                print(f"  {table}: nothing to delete")
+            print(f"  {table}: deleted {result.rowcount:,} rows ✓")
 
     print()
     print("  Done. Run --stats to verify the new sizes.")
@@ -239,30 +259,32 @@ async def setup_retention(days: int) -> None:
 async def purge_days(days: int) -> None:
     """Manually delete data older than N days (fallback when TimescaleDB policies unavailable)."""
     print()
-    print(f"  Deleting data older than {days} days...")
+    print(f"  Deleting data older than {days} days (no timeout)...")
 
-    async with AsyncSessionLocal() as session:
-        for table in ("book_ticks", "agg_trades"):
-            result = await session.execute(
+    from backend.db.session import engine
+
+    for table in ("book_ticks", "agg_trades"):
+        async with engine.begin() as conn:
+            await conn.execute(text("SET statement_timeout = 0"))
+
+            # Try TimescaleDB fast path first
+            try:
+                result = await conn.execute(
+                    text(f"SELECT drop_chunks('{table}', older_than => NOW() - INTERVAL '{days} days')"),
+                )
+                print(f"  {table}: dropped {result.rowcount} TimescaleDB chunk(s) ✓")
+                continue
+            except Exception:
+                pass
+
+            # Plain DELETE fallback
+            result = await conn.execute(
                 text(
-                    f"SELECT COUNT(*) FROM {table} "
+                    f"DELETE FROM {table} "
                     f"WHERE timestamp_exchange < NOW() - INTERVAL '{days} days'"
                 )
             )
-            count = result.scalar()
-            print(f"  {table}: {count:,} rows to delete...")
-
-            if count > 0:
-                await session.execute(
-                    text(
-                        f"DELETE FROM {table} "
-                        f"WHERE timestamp_exchange < NOW() - INTERVAL '{days} days'"
-                    )
-                )
-                await session.commit()
-                print(f"  {table}: deleted {count:,} rows ✓")
-            else:
-                print(f"  {table}: nothing to delete")
+            print(f"  {table}: deleted {result.rowcount:,} rows ✓")
 
     print()
     print("  Done.")
