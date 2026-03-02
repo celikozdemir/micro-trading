@@ -72,6 +72,8 @@ class MicroRunner:
         # Cumulative counters exposed to the dashboard
         self.total_book_ticks: int = 0
         self.total_agg_trades: int = 0
+        # Last stored bid/ask per symbol — skip storage when prices unchanged
+        self._last_book_prices: dict[str, tuple] = {}
 
     # ------------------------------------------------------------------ #
     # Hot path                                                             #
@@ -80,9 +82,18 @@ class MicroRunner:
     def on_event(self, event: BookTick | AggTrade) -> None:
         """Called synchronously from the WS handler. Zero I/O."""
         if isinstance(event, BookTick):
-            self._book_tick_buffer.append(event)
+            # Always sample latency (measures every WS message delivery)
             self._lag_samples[f"{event.symbol}:bookTicker"].append(event.lag_ms)
             self.total_book_ticks += 1
+            # Only store when bid or ask price actually changed.
+            # Binance bookTicker fires on every order book update (qty changes,
+            # partial fills, etc.), producing ~1400 msgs/sec even when bid/ask
+            # price is identical. Deduplicating reduces storage ~15x while keeping
+            # full price-change resolution for backtesting.
+            prev = self._last_book_prices.get(event.symbol)
+            if prev is None or prev[0] != event.bid_price or prev[1] != event.ask_price:
+                self._book_tick_buffer.append(event)
+                self._last_book_prices[event.symbol] = (event.bid_price, event.ask_price)
         elif isinstance(event, AggTrade):
             self._agg_trade_buffer.append(event)
             self._lag_samples[f"{event.symbol}:aggTrade"].append(event.lag_ms)
