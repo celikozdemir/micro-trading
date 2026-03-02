@@ -432,6 +432,3 @@ Once you have a few hours of data that spans a weekday session, run the full gri
   --end 2026-03-02T14:30:00 \
   --maker
 
-  Ok I want you to do two things.
-  1- Lets build a screener only, that runs the same algorithm and executes the order and only records the transaction, I will keep this running for days and want to see what we can win in a continuous algorithm. You may need to create another table for this.
-  2- Lets also keep recording the data as it is and have a data to backtest. But I need you first to clean our data before the dedublicate action. And let me know how much space would it take in a day. If too much data is created then we should be deleting the previous data after some time. Lets decide this period. Maybe another service to delete the expired period everyday. A week, a month, whichever makes sense.

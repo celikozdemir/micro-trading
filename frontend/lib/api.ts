@@ -23,9 +23,19 @@ export const getConfig = () => req<TradingConfig>('GET', '/config')
 export const updateConfig = (updates: Partial<TradingConfig>) =>
   req<TradingConfig>('PUT', '/config', updates)
 
-// Backtest
-export const runBacktest = (symbol: string, start?: string, end?: string) =>
-  req<BacktestResult>('POST', '/backtest', { symbol, start, end })
+// Paper Trades
+export const getPaperTrades = (symbol?: string, limit = 50, offset = 0) => {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (symbol) params.set('symbol', symbol)
+  return req<{ trades: PaperTradeRow[]; total: number }>('GET', `/paper-trades?${params}`)
+}
+export const getPaperStats = (symbol?: string) => {
+  const params = symbol ? `?symbol=${symbol}` : ''
+  return req<{ all_time: PaperTradeStats; today: PaperTradeStats }>('GET', `/paper-trades/stats${params}`)
+}
+
+// Services
+export const getServices = () => req<ServiceStatus[]>('GET', '/services')
 
 // Types
 export interface RunnerStatus {
@@ -52,6 +62,8 @@ export interface TradingConfig {
     window_ms: number
     trade_count_trigger: number
     move_bps_trigger: number
+    intensity_filter_trades: number
+    intensity_filter_window_ms: number
     cooldown_ms: number
     entry_qty: Record<string, number>
     exit: {
@@ -70,28 +82,33 @@ export interface TradingConfig {
   }
 }
 
-export interface BacktestResult {
-  total_trades: number
-  wins?: number
-  losses?: number
-  win_rate?: number
-  avg_hold_ms?: number
-  avg_gross_bps?: number
-  total_fees_usd?: number
-  net_pnl_usd?: number
-  max_drawdown_usd?: number
-  exit_reasons?: Record<string, number>
-  message?: string
-  trades?: TradeRecord[]
-}
-
-export interface TradeRecord {
+export interface PaperTradeRow {
+  id: number
+  symbol: string
   side: string
+  entry_time_ms: number
+  exit_time_ms: number
   entry_price: number
   exit_price: number
   qty: number
-  hold_ms: number
   exit_reason: string
-  net_pnl_usd: number
+  hold_ms: number
   gross_pnl_bps: number
+  gross_pnl_usd: number
+  fees_usd: number
+  net_pnl_usd: number
+}
+
+export interface PaperTradeStats {
+  total_trades: number
+  wins: number
+  win_rate: number
+  net_pnl_usd: number
+}
+
+export interface ServiceStatus {
+  name: string
+  display: string
+  active: boolean
+  uptime_s?: number
 }
