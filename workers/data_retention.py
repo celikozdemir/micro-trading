@@ -217,38 +217,96 @@ async def clean_before(cutoff_date: str) -> None:
 
 async def setup_retention(days: int) -> None:
     """
-    Add TimescaleDB drop_chunks retention policies so old data is removed automatically.
-    Runs daily at midnight. Requires TimescaleDB extension.
+    Set up rolling data retention.
+
+    Tries TimescaleDB retention policies first (instant, no DELETE overhead).
+    Falls back to installing a systemd timer that runs --purge-days daily at 3am UTC.
     """
     print()
-    print(f"  Setting up TimescaleDB auto-retention: {days} days rolling window...")
+    print(f"  Setting up {days}-day rolling retention...")
     print()
 
+    # ── Try TimescaleDB first ────────────────────────────────────────────
+    timescale_ok = True
     async with AsyncSessionLocal() as session:
-        for table, col in [("book_ticks", "timestamp_exchange"), ("agg_trades", "timestamp_exchange")]:
+        for table in ("book_ticks", "agg_trades"):
             try:
-                # Remove existing policy first (idempotent)
                 await session.execute(
-                    text(
-                        f"SELECT remove_retention_policy('{table}', if_exists => true)"
-                    )
+                    text(f"SELECT remove_retention_policy('{table}', if_exists => true)")
                 )
                 await session.execute(
-                    text(
-                        f"SELECT add_retention_policy('{table}', INTERVAL '{days} days')"
-                    )
+                    text(f"SELECT add_retention_policy('{table}', INTERVAL '{days} days')")
                 )
                 await session.commit()
-                print(f"  {table}: retention policy set to {days} days ✓")
-            except Exception as e:
+                print(f"  {table}: TimescaleDB retention policy → {days} days ✓")
+            except Exception:
                 await session.rollback()
-                print(f"  {table}: failed — {e}")
-                print(f"  → Is TimescaleDB installed? Try: docker exec algo_db psql -U algo -d algo_trading -c \"\\dx\"")
+                timescale_ok = False
+                break
 
+    if timescale_ok:
+        print()
+        print(f"  TimescaleDB will drop chunks older than {days} days automatically (daily).")
+        print()
+        return
+
+    # ── Fallback: systemd timer ──────────────────────────────────────────
+    print("  TimescaleDB not available (plain Postgres tables).")
+    print(f"  Creating systemd timer to run --purge-days {days} daily at 03:00 UTC...")
     print()
-    print(f"  TimescaleDB will now automatically drop chunks older than {days} days.")
-    print("  Chunks are dropped daily. Check with:")
-    print("    docker exec algo_db psql -U algo -d algo_trading -c \"SELECT * FROM timescaledb_information.jobs;\"")
+
+    _write_systemd_timer(days)
+
+
+def _write_systemd_timer(days: int) -> None:
+    """Write systemd service + timer files for daily retention cleanup."""
+    import os
+    deploy_dir = os.path.join(os.path.dirname(__file__), "..", "deploy")
+    deploy_dir = os.path.normpath(deploy_dir)
+
+    service_content = f"""[Unit]
+Description=Algo Trading Data Retention (delete data older than {days} days)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/algo-trading
+ExecStart=/home/ubuntu/algo-trading/.venv/bin/python -m workers.data_retention --purge-days {days}
+StandardOutput=journal
+StandardError=journal
+"""
+
+    timer_content = f"""[Unit]
+Description=Daily data retention for algo trading DB (keep last {days} days)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+
+    svc_path = os.path.join(deploy_dir, "algo-retention.service")
+    tmr_path = os.path.join(deploy_dir, "algo-retention.timer")
+
+    with open(svc_path, "w") as f:
+        f.write(service_content)
+    with open(tmr_path, "w") as f:
+        f.write(timer_content)
+
+    print(f"  Written: deploy/algo-retention.service")
+    print(f"  Written: deploy/algo-retention.timer")
+    print()
+    print("  Install with:")
+    print("    sudo cp deploy/algo-retention.service deploy/algo-retention.timer /etc/systemd/system/")
+    print("    sudo systemctl daemon-reload")
+    print("    sudo systemctl enable --now algo-retention.timer")
+    print()
+    print("  Verify it's scheduled:")
+    print("    sudo systemctl list-timers algo-retention.timer")
     print()
 
 
