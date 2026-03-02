@@ -57,11 +57,13 @@ class TickReplayer:
         start: datetime | None = None,
         end: datetime | None = None,
         limit: int | None = None,
+        book_limit: int | None = None,
+        trade_limit: int | None = None,
     ) -> AsyncIterator[BookTick | AggTrade]:
-        # Split limit evenly between the two streams; None = no cap
+        # Per-stream limits take precedence; fallback to equal split of `limit`
         half = (limit // 2) if limit else None
-        book_ticks = await self._load_book_ticks(symbol, start, end, half)
-        agg_trades = await self._load_agg_trades(symbol, start, end, half)
+        book_ticks = await self._load_book_ticks(symbol, start, end, book_limit if book_limit is not None else half)
+        agg_trades = await self._load_agg_trades(symbol, start, end, trade_limit if trade_limit is not None else half)
 
         # Heap entries: (timestamp_ms, stream_priority, seq, event)
         # stream_priority: 0=book 1=trade — book tick goes first at same ms
