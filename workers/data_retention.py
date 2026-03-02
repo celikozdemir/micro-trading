@@ -185,29 +185,25 @@ async def clean_before(cutoff_date: str) -> None:
     from backend.db.session import engine
 
     for table in ("book_ticks", "agg_trades"):
-        # Use a raw engine connection so we can override statement_timeout
-        async with engine.begin() as conn:
-            # Lift the 30-second timeout for this heavy operation
-            await conn.execute(text("SET statement_timeout = 0"))
-
-            # ── Fast path: TimescaleDB drop_chunks ──────────────────────
-            try:
+        # ── Fast path: TimescaleDB drop_chunks in its own transaction ────
+        # engine.begin() auto-commits on success, auto-rolls-back on any
+        # exception — so a failed drop_chunks never poisons the next block.
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("SET statement_timeout = 0"))
                 result = await conn.execute(
                     text(f"SELECT drop_chunks('{table}', older_than => :cutoff::timestamptz)"),
                     {"cutoff": cutoff_dt.isoformat()},
                 )
-                dropped = result.rowcount
-                print(f"  {table}: dropped {dropped} TimescaleDB chunk(s) ✓  (fast path)")
-                continue
-            except Exception as e:
-                if "drop_chunks" in str(e) or "does not exist" in str(e).lower():
-                    # TimescaleDB not available or table is not a hypertable
-                    pass
-                else:
-                    raise
+                print(f"  {table}: dropped {result.rowcount} TimescaleDB chunk(s) ✓  (fast path)")
+            continue  # next table
+        except Exception:
+            pass  # transaction was rolled back automatically; try DELETE below
 
-            # ── Slow path: plain DELETE ──────────────────────────────────
-            print(f"  {table}: running DELETE (no timeout)...")
+        # ── Slow path: plain DELETE in a fresh, clean transaction ────────
+        print(f"  {table}: running DELETE (no timeout)...")
+        async with engine.begin() as conn:
+            await conn.execute(text("SET statement_timeout = 0"))
             result = await conn.execute(
                 text(f"DELETE FROM {table} WHERE timestamp_exchange < :cutoff"),
                 {"cutoff": cutoff_dt},
@@ -264,20 +260,19 @@ async def purge_days(days: int) -> None:
     from backend.db.session import engine
 
     for table in ("book_ticks", "agg_trades"):
-        async with engine.begin() as conn:
-            await conn.execute(text("SET statement_timeout = 0"))
-
-            # Try TimescaleDB fast path first
-            try:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("SET statement_timeout = 0"))
                 result = await conn.execute(
                     text(f"SELECT drop_chunks('{table}', older_than => NOW() - INTERVAL '{days} days')"),
                 )
                 print(f"  {table}: dropped {result.rowcount} TimescaleDB chunk(s) ✓")
-                continue
-            except Exception:
-                pass
+            continue
+        except Exception:
+            pass
 
-            # Plain DELETE fallback
+        async with engine.begin() as conn:
+            await conn.execute(text("SET statement_timeout = 0"))
             result = await conn.execute(
                 text(
                     f"DELETE FROM {table} "
