@@ -36,6 +36,8 @@ export const getPaperStats = (symbol?: string) => {
 
 // Services
 export const getServices = () => req<ServiceStatus[]>('GET', '/services')
+export const controlService = (name: string, action: 'start' | 'stop' | 'restart') =>
+  req<{ ok: boolean; active: boolean }>('POST', `/services/${name}/${action}`)
 
 // Types
 export interface RunnerStatus {

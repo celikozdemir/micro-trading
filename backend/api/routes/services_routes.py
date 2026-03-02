@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,9 @@ _SERVICES = [
     {"name": "algo-recorder", "display": "Data Recorder"},
     {"name": "algo-paper",    "display": "Paper Trader"},
 ]
+
+# Only these services can be controlled via the API
+_CONTROLLABLE = {"algo-recorder", "algo-paper"}
 
 
 def _systemctl_active(service: str) -> tuple[bool, int | None]:
@@ -33,12 +36,10 @@ def _systemctl_active(service: str) -> tuple[bool, int | None]:
                 ["systemctl", "show", service, "--property=ActiveEnterTimestamp"],
                 capture_output=True, text=True, timeout=3,
             )
-            # Output: "ActiveEnterTimestamp=Mon 2026-03-02 17:12:22 UTC"
             line = ts_result.stdout.strip()
             if "=" in line:
                 val = line.split("=", 1)[1].strip()
                 try:
-                    # Format: "Mon 2026-03-02 17:12:22 UTC"
                     parts = val.split()
                     if len(parts) >= 3:
                         dt = datetime.strptime(
@@ -51,27 +52,31 @@ def _systemctl_active(service: str) -> tuple[bool, int | None]:
         return is_active, uptime_s
 
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        # systemd not available (dev machine / macOS)
         return False, None
+
+
+def _systemctl_control(service: str, action: str) -> tuple[bool, str]:
+    """Run sudo systemctl {action} {service}. Returns (success, error_message)."""
+    try:
+        result = subprocess.run(
+            ["sudo", "systemctl", action, service],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return True, ""
+        return False, (result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}")
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return False, str(e)
 
 
 @router.get("/services")
 async def get_services(session: AsyncSession = Depends(get_session)):
-    results = []
-
-    # Check systemd services concurrently
-    tasks = [
-        asyncio.to_thread(_systemctl_active, svc["name"])
-        for svc in _SERVICES
-    ]
+    tasks = [asyncio.to_thread(_systemctl_active, svc["name"]) for svc in _SERVICES]
     service_states = await asyncio.gather(*tasks, return_exceptions=True)
 
+    results = []
     for svc, state in zip(_SERVICES, service_states):
-        if isinstance(state, Exception):
-            active, uptime_s = False, None
-        else:
-            active, uptime_s = state
-
+        active, uptime_s = (False, None) if isinstance(state, Exception) else state
         entry: dict = {"name": svc["name"], "display": svc["display"], "active": active}
         if uptime_s is not None:
             entry["uptime_s"] = uptime_s
@@ -86,5 +91,21 @@ async def get_services(session: AsyncSession = Depends(get_session)):
         pass
 
     results.append({"name": "database", "display": "Database", "active": db_ok})
-
     return results
+
+
+@router.post("/services/{name}/{action}")
+async def control_service(name: str, action: str):
+    if name not in _CONTROLLABLE:
+        raise HTTPException(status_code=403, detail=f"Service '{name}' is not controllable via API")
+    if action not in ("start", "stop", "restart"):
+        raise HTTPException(status_code=400, detail=f"Unknown action '{action}'. Use start, stop, or restart.")
+
+    ok, err = await asyncio.to_thread(_systemctl_control, name, action)
+    if not ok:
+        raise HTTPException(status_code=500, detail=err or f"Failed to {action} {name}")
+
+    # Brief wait then return fresh status
+    await asyncio.sleep(1.5)
+    active, uptime_s = await asyncio.to_thread(_systemctl_active, name)
+    return {"ok": True, "action": action, "service": name, "active": active}

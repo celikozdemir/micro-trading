@@ -2,6 +2,8 @@
 
 import { ServiceStatus } from '@/lib/api'
 
+const CONTROLLABLE = new Set(['algo-recorder', 'algo-paper'])
+
 function fmtUptime(s: number): string {
   if (s < 60) return `${s}s`
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
@@ -12,13 +14,12 @@ function fmtUptime(s: number): string {
 
 interface Props {
   service: ServiceStatus
-  onStart?: () => void
-  onStop?: () => void
-  actionLoading?: boolean
+  onAction?: (action: 'start' | 'stop' | 'restart') => void
+  loading?: boolean
 }
 
-export default function ServiceCard({ service, onStart, onStop, actionLoading }: Props) {
-  const canControl = onStart !== undefined || onStop !== undefined
+export default function ServiceCard({ service, onAction, loading }: Props) {
+  const controllable = CONTROLLABLE.has(service.name)
 
   return (
     <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-3">
@@ -49,24 +50,33 @@ export default function ServiceCard({ service, onStart, onStop, actionLoading }:
         </p>
       )}
 
-      {/* Control buttons (recorder only) */}
-      {canControl && (
-        <div className="flex gap-2 mt-auto pt-1">
+      {/* Control buttons */}
+      {controllable && onAction && (
+        <div className="flex gap-1.5 mt-auto pt-1">
           {service.active ? (
-            <button
-              onClick={onStop}
-              disabled={actionLoading}
-              className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors disabled:opacity-50"
-            >
-              {actionLoading ? 'Stopping…' : 'Stop'}
-            </button>
+            <>
+              <button
+                onClick={() => onAction('restart')}
+                disabled={loading}
+                className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-secondary text-foreground/70 hover:bg-accent hover:text-foreground border border-border transition-colors disabled:opacity-40"
+              >
+                {loading ? '…' : 'Restart'}
+              </button>
+              <button
+                onClick={() => onAction('stop')}
+                disabled={loading}
+                className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors disabled:opacity-40"
+              >
+                Stop
+              </button>
+            </>
           ) : (
             <button
-              onClick={onStart}
-              disabled={actionLoading}
-              className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 transition-colors disabled:opacity-50"
+              onClick={() => onAction('start')}
+              disabled={loading}
+              className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 transition-colors disabled:opacity-40"
             >
-              {actionLoading ? 'Starting…' : 'Start'}
+              {loading ? 'Starting…' : 'Start'}
             </button>
           )}
         </div>

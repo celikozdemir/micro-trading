@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import {
-  getServices, getRunnerStatus, startRunner, stopRunner,
+  getServices, controlService,
   getPaperStats, getPaperTrades, getStats,
   type ServiceStatus, type PaperTradeStats, type PaperTradeRow, type SymbolStats,
 } from '@/lib/api'
@@ -13,38 +13,34 @@ import DataStats from '@/components/data-stats'
 
 const EMPTY_STATS: PaperTradeStats = { total_trades: 0, wins: 0, win_rate: 0, net_pnl_usd: 0 }
 
+const PLACEHOLDER: ServiceStatus[] = [
+  { name: 'algo-recorder', display: 'Data Recorder', active: false },
+  { name: 'algo-paper',    display: 'Paper Trader',  active: false },
+  { name: 'database',      display: 'Database',      active: false },
+]
+
 export default function Dashboard() {
-  const [services, setServices] = useState<ServiceStatus[]>([])
-  const [actionLoading, setActionLoading] = useState(false)
-  const [pnlAll, setPnlAll] = useState<PaperTradeStats>(EMPTY_STATS)
-  const [pnlToday, setPnlToday] = useState<PaperTradeStats>(EMPTY_STATS)
+  const [services, setServices]         = useState<ServiceStatus[]>([])
+  const [loadingFor, setLoadingFor]     = useState<string | null>(null)
+  const [actionError, setActionError]   = useState<string | null>(null)
+  const [pnlAll, setPnlAll]             = useState<PaperTradeStats>(EMPTY_STATS)
+  const [pnlToday, setPnlToday]         = useState<PaperTradeStats>(EMPTY_STATS)
   const [recentTrades, setRecentTrades] = useState<PaperTradeRow[]>([])
-  const [dbStats, setDbStats] = useState<Record<string, SymbolStats>>({})
+  const [dbStats, setDbStats]           = useState<Record<string, SymbolStats>>({})
 
   const refreshServices = useCallback(async () => {
-    try {
-      const [svcs, runner] = await Promise.all([getServices(), getRunnerStatus()])
-      setServices(svcs.map(s =>
-        s.name === 'algo-recorder'
-          ? { ...s, active: runner.running, uptime_s: runner.running ? runner.uptime_s : undefined }
-          : s
-      ))
-    } catch { /* keep previous state */ }
+    try { setServices(await getServices()) } catch { /* keep previous */ }
   }, [])
 
   const refreshPnl = useCallback(async () => {
     try {
-      const data = await getPaperStats()
-      setPnlAll(data.all_time)
-      setPnlToday(data.today)
+      const d = await getPaperStats()
+      setPnlAll(d.all_time); setPnlToday(d.today)
     } catch { /* ignore */ }
   }, [])
 
   const refreshTrades = useCallback(async () => {
-    try {
-      const data = await getPaperTrades(undefined, 10)
-      setRecentTrades(data.trades)
-    } catch { /* ignore */ }
+    try { setRecentTrades((await getPaperTrades(undefined, 10)).trades) } catch { /* ignore */ }
   }, [])
 
   const refreshDbStats = useCallback(async () => {
@@ -59,23 +55,20 @@ export default function Dashboard() {
     return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3) }
   }, [refreshServices, refreshPnl, refreshTrades, refreshDbStats])
 
-  const handleStart = async () => {
-    setActionLoading(true)
-    try { await startRunner(); await refreshServices() } finally { setActionLoading(false) }
+  const handleAction = async (name: string, action: 'start' | 'stop' | 'restart') => {
+    setLoadingFor(name)
+    setActionError(null)
+    try {
+      await controlService(name, action)
+      await refreshServices()
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : `Failed to ${action} ${name}`)
+    } finally {
+      setLoadingFor(null)
+    }
   }
 
-  const handleStop = async () => {
-    setActionLoading(true)
-    try { await stopRunner(); await refreshServices() } finally { setActionLoading(false) }
-  }
-
-  const placeholderServices: ServiceStatus[] = [
-    { name: 'algo-recorder', display: 'Data Recorder', active: false },
-    { name: 'algo-paper',    display: 'Paper Trader',  active: false },
-    { name: 'database',      display: 'Database',      active: false },
-  ]
-
-  const displayServices = services.length > 0 ? services : placeholderServices
+  const displayServices = services.length > 0 ? services : PLACEHOLDER
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -87,14 +80,16 @@ export default function Dashboard() {
       {/* Services */}
       <section>
         <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Services</h2>
+        {actionError && (
+          <p className="text-xs text-red-400 mb-2 font-mono">{actionError}</p>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {displayServices.map(s => (
             <ServiceCard
               key={s.name}
               service={s}
-              onStart={s.name === 'algo-recorder' ? handleStart : undefined}
-              onStop={s.name === 'algo-recorder' ? handleStop : undefined}
-              actionLoading={s.name === 'algo-recorder' ? actionLoading : undefined}
+              onAction={s.name !== 'database' ? (action) => handleAction(s.name, action) : undefined}
+              loading={loadingFor === s.name}
             />
           ))}
         </div>
