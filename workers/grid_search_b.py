@@ -32,7 +32,8 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger(__name__)
 
 # ── Fee constants ─────────────────────────────────────────────────────────────
-ROUND_TRIP_COST_BPS = 11.0
+TAKER_ROUND_TRIP_BPS = 11.0
+MAKER_ROUND_TRIP_BPS = 4.0
 
 
 # ── Parameter grid ────────────────────────────────────────────────────────────
@@ -69,7 +70,7 @@ class GridResult:
     pct_timeout: float
 
 
-def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict) -> GridResult:
+def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict, fill_model: FillModel) -> GridResult:
     config = {
         **base_config,
         "strategy": {
@@ -87,7 +88,7 @@ def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict)
         },
     }
 
-    strategy = PostSweepReversionStrategy(config, FillModel())
+    strategy = PostSweepReversionStrategy(config, fill_model)
     for event in ticks:
         strategy.on_event(event)
 
@@ -128,7 +129,7 @@ def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict)
     )
 
 
-def _print_table(results: list[GridResult], top: int) -> None:
+def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TAKER_ROUND_TRIP_BPS) -> None:
     results = sorted(results, key=lambda r: r.net_pnl_usd, reverse=True)
     results = [r for r in results if r.n_trades > 0][:top]
 
@@ -165,7 +166,7 @@ def _print_table(results: list[GridResult], top: int) -> None:
     for i, r in enumerate(results, 1):
         p = r.params
         note = ""
-        if r.avg_gross_bps < ROUND_TRIP_COST_BPS:
+        if r.avg_gross_bps < round_trip_bps:
             note = "⚠ avg gross < fees"
         elif r.win_rate < 0.40:
             note = "⚠ low win rate"
@@ -195,8 +196,12 @@ def _print_table(results: list[GridResult], top: int) -> None:
 
     print("=" * W)
     print()
-    print(f"  Round-trip cost floor: {ROUND_TRIP_COST_BPS} bps (fee 4×2 + slippage 1.5×2)")
-    print("  For mean reversion: avg_gross > 11 bps OR win_rate > 55% with positive net_pnl")
+    if round_trip_bps == MAKER_ROUND_TRIP_BPS:
+        print(f"  Round-trip cost floor: {round_trip_bps} bps (maker fee 2×2 + slippage 0)")
+        print("  [--maker mode] avg_gross > 4 bps is the minimum signal.")
+    else:
+        print(f"  Round-trip cost floor: {round_trip_bps} bps (taker fee 4×2 + slippage 1.5×2)")
+        print("  For mean reversion: avg_gross > 11 bps OR win_rate > 55% with positive net_pnl")
     print()
 
     best = results[0]
@@ -228,6 +233,7 @@ async def run(
     start: datetime | None,
     end: datetime | None,
     max_ticks: int = 100_000,
+    maker: bool = False,
 ) -> None:
     from backend.config import load_trading_config
 
@@ -253,6 +259,17 @@ async def run(
         print(f"\n  No ticks found for {symbol}. Start the recorder first.\n")
         return
 
+    # ── Build fill model ─────────────────────────────────────────────────────
+    if maker:
+        from decimal import Decimal as D
+        fill_model = FillModel(slippage_bps=D("0.0"), fee_bps=D("2.0"))
+        round_trip_bps = MAKER_ROUND_TRIP_BPS
+        log.info("Fill model: MAKER (fee=2 bps/side, slippage=0)")
+    else:
+        fill_model = FillModel()
+        round_trip_bps = TAKER_ROUND_TRIP_BPS
+        log.info("Fill model: TAKER (fee=4 bps/side, slippage=1.5 bps)")
+
     keys = list(GRID.keys())
     combos = list(itertools.product(*[GRID[k] for k in keys]))
     total = len(combos)
@@ -261,14 +278,14 @@ async def run(
     results: list[GridResult] = []
     for i, values in enumerate(combos):
         params = dict(zip(keys, values))
-        r = _run_once(ticks, params, base_config)
+        r = _run_once(ticks, params, base_config, fill_model)
         if r.n_trades >= min_trades:
             results.append(r)
         if (i + 1) % 200 == 0:
             log.info(f"  {i+1}/{total} done, {len(results)} with ≥{min_trades} trades…")
 
     log.info(f"Done. {len(results)}/{total} combinations had ≥{min_trades} trades.")
-    _print_table(results, top)
+    _print_table(results, top, round_trip_bps)
 
 
 async def main() -> None:
@@ -279,12 +296,13 @@ async def main() -> None:
     parser.add_argument("--start", default=None, help="ISO datetime e.g. 2026-03-02T13:30:00")
     parser.add_argument("--end", default=None, help="ISO datetime e.g. 2026-03-02T14:00:00")
     parser.add_argument("--max-ticks", type=int, default=100_000, help="Max ticks to load (default 100k)")
+    parser.add_argument("--maker", action="store_true", help="Use maker fill model (fee=2 bps/side, slippage=0) instead of taker")
     args = parser.parse_args()
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc) if args.start else None
     end = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc) if args.end else None
 
-    await run(args.symbol, args.top, args.min_trades, start, end, args.max_ticks)
+    await run(args.symbol, args.top, args.min_trades, start, end, args.max_ticks, args.maker)
 
 
 if __name__ == "__main__":
