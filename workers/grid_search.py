@@ -229,19 +229,24 @@ async def run(symbol: str, top: int, min_trades: int, start: datetime | None, en
     base_config = load_trading_config()
 
     # ── Load ticks once ──────────────────────────────────────────────────────
-    # Burst detection is trade-count based — give agg_trades 10x the allocation.
-    # book_ticks fire ~15-20x faster than agg_trades during volatile periods so a
-    # 50/50 split would give only ~35s of price data. Instead: cap book_ticks at
-    # 20k (enough for price context) and give all remaining budget to agg_trades.
-    book_cap = min(20_000, max_ticks // 5)
-    trade_cap = max_ticks - book_cap
-    log.info(f"Loading ticks for {symbol} from DB (book_cap={book_cap:,}, trade_cap={trade_cap:,})…")
+    # When both start and end are given, load all ticks in the window (no limit).
+    # Both streams will be synchronized — essential for correct backtesting.
+    # Keep the window ≤ 5 minutes during volatile periods to avoid OOM.
+    # When only start is given (no end), fall back to the tick cap with a
+    # trade-heavy split so at least agg_trades cover a useful time range.
+    if start is not None and end is not None:
+        log.info(f"Loading ALL ticks for {symbol} in [{start} → {end}] (no limit)…")
+        replay_kwargs: dict = {}
+    else:
+        book_cap = min(20_000, max_ticks // 5)
+        trade_cap = max_ticks - book_cap
+        log.info(f"Loading ticks for {symbol} from DB (book_cap={book_cap:,}, trade_cap={trade_cap:,})…")
+        replay_kwargs = {"book_limit": book_cap, "trade_limit": trade_cap}
+
     async with AsyncSessionLocal() as session:
         replayer = TickReplayer(session)
         ticks: list[BookTick | AggTrade] = []
-        async for event in replayer.replay(
-            symbol, start=start, end=end, book_limit=book_cap, trade_limit=trade_cap
-        ):
+        async for event in replayer.replay(symbol, start=start, end=end, **replay_kwargs):
             ticks.append(event)
     log.info(f"Loaded {len(ticks):,} ticks into memory")
 
