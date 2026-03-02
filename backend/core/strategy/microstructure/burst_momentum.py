@@ -46,6 +46,8 @@ class SymbolState:
     trade_window: deque = field(default_factory=deque)
     # Mid-price history for velocity: (timestamp_ms, mid_price)
     mid_history: deque = field(default_factory=deque)
+    # Regime intensity window: timestamps of agg_trades in the last N seconds
+    intensity_window: deque = field(default_factory=deque)
     # Most recent book tick
     last_book: Optional[BookTick] = None
     # Cooldown expiry
@@ -102,6 +104,11 @@ class BurstMomentumStrategy:
         self.max_hold_ms: int = ex["max_hold_ms"]
         self.cooldown_ms: int = s["cooldown_ms"]
         self.max_spread_bps: Decimal = Decimal(str(config["risk"]["max_spread_bps"]))
+        # Regime / intensity gate: only trade when market is hot.
+        # intensity_filter_window_ms: how far back to count trades (default 10s)
+        # intensity_filter_trades:    min trades in that window to allow entry (0 = disabled)
+        self.intensity_filter_window_ms: int = s.get("intensity_filter_window_ms", 10_000)
+        self.intensity_filter_trades: int = s.get("intensity_filter_trades", 0)
         self.fill_model = fill_model
 
         self._states: dict[str, SymbolState] = {}
@@ -147,6 +154,12 @@ class BurstMomentumStrategy:
         while state.trade_window and state.trade_window[0][0] < cutoff:
             state.trade_window.popleft()
 
+        # Maintain the longer-horizon intensity window for regime filtering
+        state.intensity_window.append(now_ms)
+        intensity_cutoff = now_ms - self.intensity_filter_window_ms
+        while state.intensity_window and state.intensity_window[0] < intensity_cutoff:
+            state.intensity_window.popleft()
+
         # Keep mid_history alive using trade price as proxy when book_ticks are sparse.
         # In production book_ticks and agg_trades interleave at high frequency; in
         # backtesting with a book_tick cap this keeps velocity detection working.
@@ -190,6 +203,10 @@ class BurstMomentumStrategy:
 
         mid_move_bps = (book.mid_price - window_start_mid) / window_start_mid * 10000
         if abs(mid_move_bps) < self.move_bps_trigger:
+            return
+
+        # Regime intensity gate: only trade when market is hot
+        if self.intensity_filter_trades > 0 and len(state.intensity_window) < self.intensity_filter_trades:
             return
 
         # Skip if spread is too wide

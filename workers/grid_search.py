@@ -48,13 +48,16 @@ MAKER_ROUND_TRIP_BPS = 4.0
 #   With taker fills (round-trip = 11 bps): no TP in this grid beats fees.
 
 GRID = {
-    "window_ms":            [250],                    # keep fixed — microstructure window
-    "trade_count_trigger":  [5, 10, 20, 40, 80],
-    "move_bps_trigger":     [1.0, 2.0, 3.5, 5.0],
-    "take_profit_bps":      [4.0, 5.0, 6.0, 8.0],   # calibrated: spike avg_gross ~6 bps
-    "stop_loss_bps":        [2.0, 3.0, 5.0],         # tight: cut fast if momentum reverses
-    "max_hold_ms":          [500, 1000, 2000],        # removed 300ms — too short for 6 bps
-    "cooldown_ms":          [500],                    # keep fixed
+    "window_ms":               [250],                    # keep fixed — microstructure window
+    "trade_count_trigger":     [5, 10, 20, 40, 80],
+    "move_bps_trigger":        [1.0, 2.0, 3.5, 5.0],
+    "take_profit_bps":         [4.0, 5.0, 6.0, 8.0],   # calibrated: spike avg_gross ~6 bps
+    "stop_loss_bps":           [2.0, 3.0, 5.0],         # tight: cut fast if momentum reverses
+    "max_hold_ms":             [500, 1000, 2000],        # removed 300ms — too short for 6 bps
+    "cooldown_ms":             [500],                    # keep fixed
+    # Regime gate: min trades in a 10s intensity window before entry is allowed.
+    # 0 = disabled. 300 ≈ 5 trades/s, 600 ≈ 10 trades/s (spike threshold).
+    "intensity_filter_trades": [0, 300, 600, 1000],
 }
 
 
@@ -78,10 +81,12 @@ def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict,
         **base_config,
         "strategy": {
             **base_config["strategy"],
-            "window_ms":           params["window_ms"],
-            "trade_count_trigger": params["trade_count_trigger"],
-            "move_bps_trigger":    params["move_bps_trigger"],
-            "cooldown_ms":         params["cooldown_ms"],
+            "window_ms":                params["window_ms"],
+            "trade_count_trigger":      params["trade_count_trigger"],
+            "move_bps_trigger":         params["move_bps_trigger"],
+            "cooldown_ms":              params["cooldown_ms"],
+            "intensity_filter_trades":  params.get("intensity_filter_trades", 0),
+            "intensity_filter_window_ms": 10_000,
             "exit": {
                 "take_profit_bps": params["take_profit_bps"],
                 "stop_loss_bps":   params["stop_loss_bps"],
@@ -142,7 +147,7 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
         print("  → Or run --diagnose first to see actual threshold distributions\n")
         return
 
-    W = 110
+    W = 122
     print()
     print("=" * W)
     print(f"  Grid Search Results (top {len(results)}, sorted by net P&L)")
@@ -154,6 +159,7 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
         f"{'TP':>6}  "
         f"{'SL':>6}  "
         f"{'hold_ms':>7}  "
+        f"{'intens':>6}  "
         f"{'trades':>6}  "
         f"{'win%':>5}  "
         f"{'avg_gross':>9}  "
@@ -184,6 +190,7 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
             f"{p['take_profit_bps']:>6.1f}  "
             f"{p['stop_loss_bps']:>6.1f}  "
             f"{p['max_hold_ms']:>7}  "
+            f"{p.get('intensity_filter_trades', 0):>6}  "
             f"{r.n_trades:>6}  "
             f"{r.win_rate*100:>5.1f}  "
             f"{r.avg_gross_bps:>9.2f}  "
@@ -215,6 +222,8 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
         print(f"    trade_count_trigger: {p['trade_count_trigger']}")
         print(f"    move_bps_trigger: {p['move_bps_trigger']}")
         print(f"    cooldown_ms: {p['cooldown_ms']}")
+        print(f"    intensity_filter_trades: {p.get('intensity_filter_trades', 0)}")
+        print(f"    intensity_filter_window_ms: 10000")
         print("    exit:")
         print(f"      take_profit_bps: {p['take_profit_bps']}")
         print(f"      stop_loss_bps: {p['stop_loss_bps']}")
