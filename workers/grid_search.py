@@ -40,24 +40,29 @@ MAKER_ROUND_TRIP_BPS = 4.0
 
 
 # ── Parameter grid ────────────────────────────────────────────────────────────
-# Calibrated from diagnostic data (2026-03-02):
-#   Typical spike burst = 6–9 bps avg_gross during 7k trades/min events.
-#   TP must be BELOW avg_gross to actually trigger — use 3–8 bps range.
-#   SL must be tight (2–5 bps) to cut losses quickly in the hot path.
-#   With maker fills (round-trip = 4 bps): TP > 4 bps is break-even floor.
-#   With taker fills (round-trip = 11 bps): no TP in this grid beats fees.
+# Three-gate entry model (all must fire simultaneously):
+#   Gate 1 — Relative intensity spike: notional_1s > intensity_spike_mult × 60s-avg/sec
+#   Gate 2 — Volatility expansion:     sigma_fast > vol_expansion_ratio × sigma_slow
+#   Gate 3 — Notional AFI:             (buy_notional - sell_notional) / total > afi_threshold
+#
+# Fill model costs:
+#   Maker (--maker):  2 bps/side × 2 = 4 bps round-trip   → TP floor > 4 bps
+#   Taker (default): (4 + 1.5) × 2  = 11 bps round-trip  → TP floor > 11 bps
 
 GRID = {
-    "window_ms":               [250],                    # keep fixed — microstructure window
-    "trade_count_trigger":     [5, 10, 20, 40, 80],
-    "move_bps_trigger":        [1.0, 2.0, 3.5, 5.0],
-    "take_profit_bps":         [4.0, 5.0, 6.0, 8.0],   # calibrated: spike avg_gross ~6 bps
-    "stop_loss_bps":           [2.0, 3.0, 5.0],         # tight: cut fast if momentum reverses
-    "max_hold_ms":             [500, 1000, 2000],        # removed 300ms — too short for 6 bps
-    "cooldown_ms":             [500],                    # keep fixed
-    # Regime gate: min trades in a 10s intensity window before entry is allowed.
-    # 0 = disabled. 300 ≈ 5 trades/s, 600 ≈ 10 trades/s (spike threshold).
-    "intensity_filter_trades": [0, 300, 600, 1000],
+    "window_ms":               [250],           # fixed — microstructure burst window
+    "trade_count_trigger":     [5, 10],          # noise floor; gates do the heavy lifting
+    "move_bps_trigger":        [2.0, 3.5, 5.0],
+    "take_profit_bps":         [5.0, 8.0, 10.0, 12.0],
+    "stop_loss_bps":           [3.0, 5.0, 8.0],
+    "max_hold_ms":             [1000, 2000, 3000],
+    "cooldown_ms":             [500],            # fixed
+    # Gate 1: relative intensity spike multiplier
+    "intensity_spike_mult":    [3.0, 5.0, 8.0],
+    # Gate 2: volatility expansion ratio (sigma_fast / sigma_slow)
+    "vol_expansion_ratio":     [1.5, 2.0, 2.5],
+    # Gate 3: notional AFI threshold
+    "afi_threshold":           [0.3, 0.4, 0.5],
 }
 
 
@@ -81,12 +86,16 @@ def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict,
         **base_config,
         "strategy": {
             **base_config["strategy"],
-            "window_ms":                params["window_ms"],
-            "trade_count_trigger":      params["trade_count_trigger"],
-            "move_bps_trigger":         params["move_bps_trigger"],
-            "cooldown_ms":              params["cooldown_ms"],
-            "intensity_filter_trades":  params.get("intensity_filter_trades", 0),
-            "intensity_filter_window_ms": 10_000,
+            "window_ms":               params["window_ms"],
+            "trade_count_trigger":     params["trade_count_trigger"],
+            "move_bps_trigger":        params["move_bps_trigger"],
+            "cooldown_ms":             params["cooldown_ms"],
+            # Three-gate parameters
+            "intensity_spike_mult":    params.get("intensity_spike_mult", 5.0),
+            "vol_expansion_ratio":     params.get("vol_expansion_ratio", 2.0),
+            "afi_threshold":           params.get("afi_threshold", 0.4),
+            "sigma_fast_halflife_ms":  500,    # fixed — tuned to react within one burst
+            "sigma_slow_halflife_ms":  45_000, # fixed — 45s baseline
             "exit": {
                 "take_profit_bps": params["take_profit_bps"],
                 "stop_loss_bps":   params["stop_loss_bps"],
@@ -147,25 +156,27 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
         print("  → Or run --diagnose first to see actual threshold distributions\n")
         return
 
-    W = 122
+    W = 140
     print()
     print("=" * W)
     print(f"  Grid Search Results (top {len(results)}, sorted by net P&L)")
     print("=" * W)
     hdr = (
         f"{'#':>3}  "
-        f"{'cnt_trig':>8}  "
-        f"{'mov_bps':>7}  "
-        f"{'TP':>6}  "
-        f"{'SL':>6}  "
-        f"{'hold_ms':>7}  "
-        f"{'intens':>6}  "
+        f"{'cnt':>4}  "
+        f"{'mov':>5}  "
+        f"{'TP':>5}  "
+        f"{'SL':>5}  "
+        f"{'hold':>5}  "
+        f"{'spkX':>5}  "
+        f"{'volR':>5}  "
+        f"{'afi':>5}  "
         f"{'trades':>6}  "
         f"{'win%':>5}  "
         f"{'avg_gross':>9}  "
         f"{'net_pnl':>8}  "
         f"{'max_dd':>8}  "
-        f"{'timeout%':>8}  "
+        f"{'tout%':>6}  "
         f"{'note'}"
     )
     print(f"  {hdr}")
@@ -185,18 +196,20 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
 
         row = (
             f"{i:>3}  "
-            f"{p['trade_count_trigger']:>8}  "
-            f"{p['move_bps_trigger']:>7.1f}  "
-            f"{p['take_profit_bps']:>6.1f}  "
-            f"{p['stop_loss_bps']:>6.1f}  "
-            f"{p['max_hold_ms']:>7}  "
-            f"{p.get('intensity_filter_trades', 0):>6}  "
+            f"{p['trade_count_trigger']:>4}  "
+            f"{p['move_bps_trigger']:>5.1f}  "
+            f"{p['take_profit_bps']:>5.1f}  "
+            f"{p['stop_loss_bps']:>5.1f}  "
+            f"{p['max_hold_ms']:>5}  "
+            f"{p.get('intensity_spike_mult', 5.0):>5.1f}  "
+            f"{p.get('vol_expansion_ratio', 2.0):>5.2f}  "
+            f"{p.get('afi_threshold', 0.4):>5.2f}  "
             f"{r.n_trades:>6}  "
             f"{r.win_rate*100:>5.1f}  "
             f"{r.avg_gross_bps:>9.2f}  "
             f"${r.net_pnl_usd:>7.4f}  "
             f"${r.max_dd_usd:>7.4f}  "
-            f"{r.pct_timeout*100:>8.1f}  "
+            f"{r.pct_timeout*100:>6.1f}  "
             f"{note}"
         )
         print(f"  {row}")
@@ -204,34 +217,34 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
     print("=" * W)
     print()
     if round_trip_bps == MAKER_ROUND_TRIP_BPS:
-        print(f"  Round-trip cost floor: {round_trip_bps} bps (maker fee 2×2 + slippage 0)")
-        print("  [--maker mode] avg_gross > 4 bps is the minimum signal.")
+        print(f"  Round-trip cost floor: {round_trip_bps} bps (maker 2×2, no slippage)")
     else:
-        print(f"  Round-trip cost floor: {round_trip_bps} bps (taker fee 4×2 + slippage 1.5×2)")
-        print("  TP must beat this floor on average. avg_gross > 11 bps is the minimum signal.")
+        print(f"  Round-trip cost floor: {round_trip_bps} bps (taker 4×2 + slippage 1.5×2)")
     print()
 
     # Best candidate summary
     best = results[0]
     if best.net_pnl_usd > 0:
         p = best.params
-        print("  Best candidate config snippet (paste into configs/default.yaml):")
+        print("  Best candidate — paste into configs/default.yaml:")
         print()
         print("  strategy:")
         print(f"    window_ms: {p['window_ms']}")
         print(f"    trade_count_trigger: {p['trade_count_trigger']}")
         print(f"    move_bps_trigger: {p['move_bps_trigger']}")
         print(f"    cooldown_ms: {p['cooldown_ms']}")
-        print(f"    intensity_filter_trades: {p.get('intensity_filter_trades', 0)}")
-        print(f"    intensity_filter_window_ms: 10000")
+        print(f"    intensity_spike_mult: {p.get('intensity_spike_mult', 5.0)}")
+        print(f"    sigma_fast_halflife_ms: 500")
+        print(f"    sigma_slow_halflife_ms: 45000")
+        print(f"    vol_expansion_ratio: {p.get('vol_expansion_ratio', 2.0)}")
+        print(f"    afi_threshold: {p.get('afi_threshold', 0.4)}")
         print("    exit:")
         print(f"      take_profit_bps: {p['take_profit_bps']}")
         print(f"      stop_loss_bps: {p['stop_loss_bps']}")
         print(f"      max_hold_ms: {p['max_hold_ms']}")
     else:
         print("  ⚠  No profitable combination found in this dataset.")
-        print("  → The edge may not be present in this recording session.")
-        print("  → Collect data during higher-volatility windows (e.g. US market open).")
+        print("  → Collect data during higher-volatility windows (e.g. US/Asia market open).")
     print()
 
 
