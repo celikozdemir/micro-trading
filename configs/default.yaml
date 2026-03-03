@@ -31,12 +31,13 @@ strategy:
   # 0.5 = buy side must account for ≥75% of notional flow (or ≤25% for shorts).
   afi_threshold: 0.5
 
-  # Gate 4: Dual-trend crossover filter
-  # 1-min EWMA > 5-min EWMA = uptrend → LONG only; reverse = downtrend → SHORT only.
-  # More responsive than price-vs-slow-trend; filters intraday reversals.
-  trend_halflife_ms: 300000        # 5-min slow EWMA
-  short_trend_halflife_ms: 60000   # 1-min fast EWMA
-  trend_warmup_ms: 300000          # require 5 min before enforcing (slow EWMA stabilization)
+  # Gate 4: Micro-regime crossover filter (matched to burst timescale)
+  # fast EMA (2s) > slow EMA (20s) → micro-uptrend → LONG only; reverse → SHORT only.
+  # Both halflives match the burst window (~250ms–5s), not macro trend-following.
+  # 1m/5m crossovers are too slow — by the time they cross, the burst is over.
+  trend_halflife_ms: 20000         # 20s slow micro-EMA (regime reference)
+  short_trend_halflife_ms: 2000    # 2s fast micro-EMA (burst-speed momentum)
+  trend_warmup_ms: 60000           # 60s warmup is enough for 20s EWMA to stabilize
   # ──────────────────────────────────────────────────────────────────
   entry_qty:
     BTCUSDT: 0.001
