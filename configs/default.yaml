@@ -39,9 +39,11 @@ strategy:
     # Break-even with 62% win rate: TP net = 10-4 = +6 bps, SL net = -(6+4) = -10 bps.
     # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
     max_hold_ms: 3000         # 3 s is enough to reach 10 bps in a real spike
-    take_profit_bps: 10.0     # gross TP; net = +6 bps after 4 bps maker cost
-    stop_loss_bps: 3.0        # gross SL; net = -7 bps — tighter stop, grid-search winner
-  cooldown_ms: 500
+    take_profit_bps: 10.0       # gross TP; net = +6 bps after 4 bps maker cost
+    stop_loss_bps: 5.0          # gross SL; net = -9 bps — 3 bps was below market noise floor
+    ratchet_trigger_bps: 5.0    # once gross >= 5 bps, activate floor stop
+    ratchet_floor_bps: 4.0      # floor stop at 4 bps gross = 0 net (fee breakeven)
+  cooldown_ms: 2000           # 2s: prevents re-entering the same burst 3-4 times
 risk:
   max_trades_per_min: 60
   daily_loss_usd: 50

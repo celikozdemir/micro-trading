@@ -48,6 +48,7 @@ class OpenPosition:
     entry_price: Decimal
     qty: Decimal
     entry_mid: Decimal   # mid at entry, used for bps calculations
+    ratchet_active: bool = False  # True once pnl_bps >= ratchet_trigger_bps
 
 
 @dataclass
@@ -136,6 +137,10 @@ class BurstMomentumStrategy:
         self.stop_loss_bps: Decimal = Decimal(str(ex["stop_loss_bps"]))
         self.max_hold_ms: int = ex["max_hold_ms"]
         self.cooldown_ms: int = s["cooldown_ms"]
+        # Ratchet stop: once gross >= ratchet_trigger_bps, floor the stop at ratchet_floor_bps.
+        # Default: trigger at 5 bps (half of 10 bps TP), floor at 4 bps (= fee cost = 0 net).
+        self.ratchet_trigger_bps: Decimal = Decimal(str(ex.get("ratchet_trigger_bps", 5.0)))
+        self.ratchet_floor_bps: Decimal = Decimal(str(ex.get("ratchet_floor_bps", 4.0)))
 
         # Risk
         self.max_spread_bps: Decimal = Decimal(str(config["risk"]["max_spread_bps"]))
@@ -355,9 +360,16 @@ class BurstMomentumStrategy:
 
         if pos.side == "BUY":
             pnl_bps = (book.bid_price - pos.entry_price) / pos.entry_mid * 10000
+            if pnl_bps >= self.ratchet_trigger_bps:
+                pos.ratchet_active = True
+            # Ratchet active: stop loss floor rises to ratchet_floor_bps gross (≈ 0 net)
+            if pos.ratchet_active:
+                is_stopped = pnl_bps <= self.ratchet_floor_bps
+            else:
+                is_stopped = pnl_bps <= -self.stop_loss_bps
             if pnl_bps >= self.take_profit_bps:
                 exit_reason = "take_profit"
-            elif pnl_bps <= -self.stop_loss_bps:
+            elif is_stopped:
                 exit_reason = "stop_loss"
             elif hold_ms >= self.max_hold_ms:
                 exit_reason = "timeout"
@@ -367,9 +379,15 @@ class BurstMomentumStrategy:
                 gross_pnl_usd = (exit_fill.price - pos.entry_price) * pos.qty
         else:  # SELL
             pnl_bps = (pos.entry_price - book.ask_price) / pos.entry_mid * 10000
+            if pnl_bps >= self.ratchet_trigger_bps:
+                pos.ratchet_active = True
+            if pos.ratchet_active:
+                is_stopped = pnl_bps <= self.ratchet_floor_bps
+            else:
+                is_stopped = pnl_bps <= -self.stop_loss_bps
             if pnl_bps >= self.take_profit_bps:
                 exit_reason = "take_profit"
-            elif pnl_bps <= -self.stop_loss_bps:
+            elif is_stopped:
                 exit_reason = "stop_loss"
             elif hold_ms >= self.max_hold_ms:
                 exit_reason = "timeout"
