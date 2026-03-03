@@ -10,26 +10,26 @@ data_streams:
 strategy:
   type: burst_momentum
   window_ms: 250             # burst detection window for AFI / trade-count (ms)
-  trade_count_trigger: 10    # minimum trades in window (noise floor only)
-  move_bps_trigger: 5.0      # minimum mid-price displacement in window (bps)
+  trade_count_trigger: 5     # minimum trades in window (noise floor only)
+  move_bps_trigger: 2.0      # minimum mid-price displacement in window (bps)
 
   # ── Three-gate signal filters (all must fire simultaneously) ──────
   # Gate 1: Relative intensity spike
   # Current 1s notional must exceed this multiple of the 60s-avg-per-sec.
-  # 5× = only enter when trading volume is 5 times above normal pace.
-  intensity_spike_mult: 5.0
+  # 8× = only enter when trading volume is 8 times above normal pace.
+  intensity_spike_mult: 8.0
 
   # Gate 2: Volatility expansion (EWMA ratio)
-  # sigma_fast (1.5s half-life) must exceed vol_expansion_ratio × sigma_slow (45s half-life).
-  # Filters out entries during flat markets where 5 bps is just ambient noise.
+  # sigma_fast (500ms half-life) must exceed vol_expansion_ratio × sigma_slow (45s half-life).
+  # Filters out entries during flat markets where move is just ambient noise.
   sigma_fast_halflife_ms: 500    # reacts within one burst duration (~500ms)
   sigma_slow_halflife_ms: 45000
   vol_expansion_ratio: 2.0      # sigma_fast must be 2× background to trigger
 
   # Gate 3: Notional Aggressive Flow Imbalance
   # (buy_notional - sell_notional) / total must exceed afi_threshold in direction of move.
-  # 0.4 = buy side must account for ≥70% of notional flow (or ≤30% for shorts).
-  afi_threshold: 0.4
+  # 0.5 = buy side must account for ≥75% of notional flow (or ≤25% for shorts).
+  afi_threshold: 0.5
   # ──────────────────────────────────────────────────────────────────
   entry_qty:
     BTCUSDT: 0.001
@@ -40,7 +40,7 @@ strategy:
     # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
     max_hold_ms: 3000         # 3 s is enough to reach 10 bps in a real spike
     take_profit_bps: 10.0     # gross TP; net = +6 bps after 4 bps maker cost
-    stop_loss_bps: 6.0        # gross SL; net = -10 bps — tight but not noise-prone
+    stop_loss_bps: 3.0        # gross SL; net = -7 bps — tighter stop, grid-search winner
   cooldown_ms: 500
 risk:
   max_trades_per_min: 60
