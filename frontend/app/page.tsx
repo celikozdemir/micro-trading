@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   getServices, controlService,
-  getPaperStats, getPaperTrades, getStats,
-  type ServiceStatus, type PaperTradeStats, type PaperTradeRow, type SymbolStats,
+  getPaperStats, getPaperTrades, getStats, getLiveState,
+  type ServiceStatus, type PaperTradeStats, type PaperTradeRow, type SymbolStats, type LiveState,
 } from '@/lib/api'
 import ServiceCard from '@/components/service-card'
 import PnlSummary from '@/components/pnl-summary'
-import TradesTable from '@/components/trades-table'
+import TradesTable, { type LivePositionEntry } from '@/components/trades-table'
 import DataStats from '@/components/data-stats'
 import LiveMarketCard from '@/components/live-market-card'
 
@@ -20,6 +20,13 @@ const PLACEHOLDER: ServiceStatus[] = [
   { name: 'database',      display: 'Database',      active: false },
 ]
 
+function livePositionsFrom(state: LiveState | null): LivePositionEntry[] {
+  if (!state) return []
+  return Object.entries(state.positions)
+    .filter(([, pos]) => pos != null)
+    .map(([symbol, pos]) => ({ symbol, pos: pos! }))
+}
+
 export default function Dashboard() {
   const [services, setServices]         = useState<ServiceStatus[]>([])
   const [loadingFor, setLoadingFor]     = useState<string | null>(null)
@@ -28,6 +35,7 @@ export default function Dashboard() {
   const [pnlToday, setPnlToday]         = useState<PaperTradeStats>(EMPTY_STATS)
   const [recentTrades, setRecentTrades] = useState<PaperTradeRow[]>([])
   const [dbStats, setDbStats]           = useState<Record<string, SymbolStats>>({})
+  const [liveState, setLiveState]       = useState<LiveState | null>(null)
 
   const refreshServices = useCallback(async () => {
     try { setServices(await getServices()) } catch { /* keep previous */ }
@@ -48,13 +56,18 @@ export default function Dashboard() {
     try { setDbStats(await getStats()) } catch { /* ignore */ }
   }, [])
 
+  const refreshLive = useCallback(async () => {
+    try { setLiveState(await getLiveState()) } catch { /* keep previous */ }
+  }, [])
+
   useEffect(() => {
-    refreshServices(); refreshPnl(); refreshTrades(); refreshDbStats()
+    refreshServices(); refreshPnl(); refreshTrades(); refreshDbStats(); refreshLive()
     const t1 = setInterval(refreshServices, 5_000)
     const t2 = setInterval(() => { refreshPnl(); refreshTrades() }, 10_000)
     const t3 = setInterval(refreshDbStats, 15_000)
-    return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3) }
-  }, [refreshServices, refreshPnl, refreshTrades, refreshDbStats])
+    const t4 = setInterval(refreshLive, 500)
+    return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearInterval(t4) }
+  }, [refreshServices, refreshPnl, refreshTrades, refreshDbStats, refreshLive])
 
   const handleAction = async (name: string, action: 'start' | 'stop' | 'restart') => {
     setLoadingFor(name)
@@ -70,6 +83,7 @@ export default function Dashboard() {
   }
 
   const displayServices = services.length > 0 ? services : PLACEHOLDER
+  const livePosEntries = livePositionsFrom(liveState)
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -120,7 +134,7 @@ export default function Dashboard() {
               View all →
             </a>
           </div>
-          <TradesTable trades={recentTrades} compact />
+          <TradesTable trades={recentTrades} compact livePositions={livePosEntries} />
         </div>
 
         <div className="bg-card border border-border rounded-xl p-5">

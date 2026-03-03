@@ -1,13 +1,23 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { getPaperTrades, getPaperStats, clearPaperTrades, type PaperTradeRow, type PaperTradeStats } from '@/lib/api'
+import {
+  getPaperTrades, getPaperStats, clearPaperTrades, getLiveState,
+  type PaperTradeRow, type PaperTradeStats, type LiveState,
+} from '@/lib/api'
 import PnlSummary from '@/components/pnl-summary'
-import TradesTable from '@/components/trades-table'
+import TradesTable, { type LivePositionEntry } from '@/components/trades-table'
 
 const SYMBOLS = ['', 'BTCUSDT', 'ETHUSDT'] as const
 const PAGE_SIZE = 50
 const EMPTY_STATS: PaperTradeStats = { total_trades: 0, wins: 0, win_rate: 0, net_pnl_usd: 0 }
+
+function livePositionsFrom(state: LiveState | null): LivePositionEntry[] {
+  if (!state) return []
+  return Object.entries(state.positions)
+    .filter(([, pos]) => pos != null)
+    .map(([symbol, pos]) => ({ symbol, pos: pos! }))
+}
 
 export default function TradesPage() {
   const [symbol, setSymbol]       = useState('')
@@ -20,6 +30,7 @@ export default function TradesPage() {
   })
   const [confirming, setConfirming] = useState(false)
   const [clearing, setClearing]     = useState(false)
+  const [liveState, setLiveState]   = useState<LiveState | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -33,11 +44,17 @@ export default function TradesPage() {
     } catch { /* ignore */ }
   }, [symbol, page])
 
+  const refreshLive = useCallback(async () => {
+    try { setLiveState(await getLiveState()) } catch { /* keep previous */ }
+  }, [])
+
   useEffect(() => {
     load()
-    const t = setInterval(load, 10_000)
-    return () => clearInterval(t)
-  }, [load])
+    refreshLive()
+    const t1 = setInterval(load, 10_000)
+    const t2 = setInterval(refreshLive, 500)
+    return () => { clearInterval(t1); clearInterval(t2) }
+  }, [load, refreshLive])
 
   const handleClear = async () => {
     if (!confirming) { setConfirming(true); return }
@@ -56,6 +73,7 @@ export default function TradesPage() {
   useEffect(() => { setPage(0) }, [symbol])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const livePosEntries = livePositionsFrom(liveState)
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -141,7 +159,7 @@ export default function TradesPage() {
 
       {/* Table */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <TradesTable trades={trades} />
+        <TradesTable trades={trades} livePositions={livePosEntries} />
       </div>
     </div>
   )
