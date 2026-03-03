@@ -18,6 +18,7 @@ Systemd: see deploy/algo-paper.service
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -79,6 +80,10 @@ class PaperTrader:
         self._total_wins: int = 0
         self._total_net_pnl: float = 0.0
 
+        # Live state shared with FastAPI via JSON file
+        self._live_state: dict = {"ts_ms": None, "symbols": {}, "positions": {}}
+        self._state_file: str = os.environ.get("LIVE_STATE_FILE", "/tmp/algo_live_state.json")
+
     # ------------------------------------------------------------------ #
     # Hot path                                                             #
     # ------------------------------------------------------------------ #
@@ -86,6 +91,36 @@ class PaperTrader:
     def on_event(self, event: BookTick | AggTrade) -> None:
         """Feed tick to strategy. Zero I/O."""
         self._strategy.on_event(event)
+
+        # Update in-memory live state (no I/O — written by _state_write_loop)
+        if isinstance(event, BookTick):
+            self._live_state["ts_ms"] = event.timestamp_exchange_ms
+            self._live_state["symbols"][event.symbol] = {
+                "bid": float(event.bid_price),
+                "ask": float(event.ask_price),
+                "mid": float(event.mid_price),
+                "spread_bps": float(event.spread_bps),
+                "ts_ms": event.timestamp_exchange_ms,
+            }
+            # Reflect current open position P&L
+            sym_state = self._strategy._states.get(event.symbol)
+            if sym_state is not None:
+                op = sym_state.open_position
+                if op is not None:
+                    if op.side == "BUY":
+                        pnl_bps = float((event.bid_price - op.entry_price) / op.entry_mid * 10000)
+                    else:
+                        pnl_bps = float((op.entry_price - event.ask_price) / op.entry_mid * 10000)
+                    self._live_state["positions"][event.symbol] = {
+                        "side": op.side,
+                        "entry_price": float(op.entry_price),
+                        "entry_time_ms": op.entry_time_ms,
+                        "qty": float(op.qty),
+                        "current_pnl_bps": round(pnl_bps, 3),
+                        "high_watermark_bps": round(op.high_watermark_bps, 3),
+                    }
+                else:
+                    self._live_state["positions"][event.symbol] = None
 
         # Detect newly completed trades
         new_count = len(self._strategy.trades)
@@ -154,6 +189,20 @@ class PaperTrader:
                 log.error("Paper trade flush failed", error=str(e))
 
     # ------------------------------------------------------------------ #
+    # Live state file (read by FastAPI /api/live endpoint)                #
+    # ------------------------------------------------------------------ #
+
+    async def _state_write_loop(self) -> None:
+        """Write live market state to a shared JSON file every 200ms."""
+        while self._running:
+            await asyncio.sleep(0.2)
+            try:
+                with open(self._state_file, "w") as f:
+                    json.dump(self._live_state, f)
+            except Exception:
+                pass  # Non-critical; dashboard will show stale or no data
+
+    # ------------------------------------------------------------------ #
     # P&L reporting                                                        #
     # ------------------------------------------------------------------ #
 
@@ -207,6 +256,7 @@ class PaperTrader:
             feed.run(),
             self._flush_loop(),
             self._pnl_log_loop(),
+            self._state_write_loop(),
         )
 
     async def stop(self) -> None:

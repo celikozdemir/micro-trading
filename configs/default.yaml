@@ -46,7 +46,7 @@ strategy:
     # Maker fill model cost: 2 bps fee/side × 2 = 4 bps round-trip (no slippage).
     # Break-even with 62% win rate: TP net = 10-4 = +6 bps, SL net = -(6+4) = -10 bps.
     # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
-    max_hold_ms: 5000         # 5s: give genuine bursts more time to reach TP
+    max_hold_ms: 30000        # 30s: let trailing stop manage exits; timeout only as last resort
     take_profit_bps: 10.0       # gross TP; net = +6 bps after 4 bps maker cost
     stop_loss_bps: 5.0          # gross SL; net = -9 bps — 3 bps was below market noise floor
     trail_trigger_bps: 4.0      # start trailing once gross >= 4 bps (fee breakeven)

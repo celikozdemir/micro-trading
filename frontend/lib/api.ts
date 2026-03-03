@@ -40,6 +40,9 @@ export const getServices = () => req<ServiceStatus[]>('GET', '/services')
 export const controlService = (name: string, action: 'start' | 'stop' | 'restart') =>
   req<{ ok: boolean; active: boolean }>('POST', `/services/${name}/${action}`)
 
+// Live market state
+export const getLiveState = () => req<LiveState>('GET', '/live')
+
 // Types
 export interface RunnerStatus {
   running: boolean
@@ -114,4 +117,27 @@ export interface ServiceStatus {
   display: string
   active: boolean
   uptime_s?: number
+}
+
+export interface LiveSymbol {
+  bid: number
+  ask: number
+  mid: number
+  spread_bps: number
+  ts_ms: number
+}
+
+export interface LivePosition {
+  side: 'BUY' | 'SELL'
+  entry_price: number
+  entry_time_ms: number
+  qty: number
+  current_pnl_bps: number
+  high_watermark_bps: number
+}
+
+export interface LiveState {
+  ts_ms: number | null
+  symbols: Record<string, LiveSymbol>
+  positions: Record<string, LivePosition | null>
 }

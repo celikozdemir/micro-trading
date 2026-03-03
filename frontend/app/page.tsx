@@ -10,6 +10,7 @@ import ServiceCard from '@/components/service-card'
 import PnlSummary from '@/components/pnl-summary'
 import TradesTable from '@/components/trades-table'
 import DataStats from '@/components/data-stats'
+import LiveMarketCard from '@/components/live-market-card'
 
 const EMPTY_STATS: PaperTradeStats = { total_trades: 0, wins: 0, win_rate: 0, net_pnl_usd: 0 }
 
@@ -93,6 +94,12 @@ export default function Dashboard() {
             />
           ))}
         </div>
+      </section>
+
+      {/* Live Market */}
+      <section>
+        <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Live Market</h2>
+        <LiveMarketCard />
       </section>
 
       {/* P&L Summary */}
