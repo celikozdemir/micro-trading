@@ -30,6 +30,12 @@ strategy:
   # (buy_notional - sell_notional) / total must exceed afi_threshold in direction of move.
   # 0.5 = buy side must account for ≥75% of notional flow (or ≤25% for shorts).
   afi_threshold: 0.5
+
+  # Gate 4: Trend direction filter
+  # Only enter LONG when mid > 5-min EWMA trend; only SHORT when mid < trend.
+  # Blocks counter-trend burst entries which are the main source of timeout losses.
+  trend_halflife_ms: 300000   # 5-min half-life; slow-moving trend reference
+  trend_warmup_ms: 300000     # require 5 min of data before enforcing this gate
   # ──────────────────────────────────────────────────────────────────
   entry_qty:
     BTCUSDT: 0.001

@@ -74,6 +74,10 @@ class SymbolState:
     last_ewma_mid: float = 0.0       # previous mid used in EWMA update
     last_ewma_ms: int = 0            # timestamp of last EWMA update
 
+    # 5-minute trend EWMA — level (not return), used for direction gate
+    trend_ewma: float = 0.0          # EWMA of mid-price with long halflife
+    trend_ewma_start_ms: int = 0     # timestamp of first observation (warm-up check)
+
     # Most recent book tick (needed for exit checks triggered by agg_trades)
     last_book: Optional[BookTick] = None
 
@@ -153,6 +157,13 @@ class BurstMomentumStrategy:
         self.sigma_fast_halflife_ms: float = float(s.get("sigma_fast_halflife_ms", 1500))
         self.sigma_slow_halflife_ms: float = float(s.get("sigma_slow_halflife_ms", 45_000))
         self.vol_expansion_ratio: float = float(s.get("vol_expansion_ratio", 2.5))
+
+        # Gate 4: Trend direction filter
+        # trend_halflife_ms controls how quickly the trend EWMA responds.
+        # 300_000 ms (5 min) = smooth, slow-moving trend reference.
+        self.trend_halflife_ms: float = float(s.get("trend_halflife_ms", 300_000))
+        # Require this many ms of data before the trend gate is enforced.
+        self.trend_warmup_ms: int = int(s.get("trend_warmup_ms", 300_000))
 
         # Gate 3: Notional AFI
         self.afi_threshold: float = float(s.get("afi_threshold", 0.4))
@@ -259,9 +270,17 @@ class BurstMomentumStrategy:
         # Time-aware EWMA decay: alpha = 1 - exp(-dt / halflife)
         alpha_fast = 1.0 - math.exp(-dt_ms / self.sigma_fast_halflife_ms)
         alpha_slow = 1.0 - math.exp(-dt_ms / self.sigma_slow_halflife_ms)
+        alpha_trend = 1.0 - math.exp(-dt_ms / self.trend_halflife_ms)
 
         state.sigma_fast = alpha_fast * ret + (1.0 - alpha_fast) * state.sigma_fast
         state.sigma_slow = alpha_slow * ret + (1.0 - alpha_slow) * state.sigma_slow
+
+        # Trend EWMA tracks the price level (not returns)
+        if state.trend_ewma == 0.0:
+            state.trend_ewma = mid
+            state.trend_ewma_start_ms = now_ms
+        else:
+            state.trend_ewma = alpha_trend * mid + (1.0 - alpha_trend) * state.trend_ewma
 
         state.last_ewma_mid = mid
         state.last_ewma_ms = now_ms
@@ -316,6 +335,19 @@ class BurstMomentumStrategy:
         # Spread guard
         if book.spread_bps > self.max_spread_bps:
             return
+
+        # ── Gate 4: Trend direction filter ─────────────────────────────
+        # Only enter in the direction of the 5-minute EWMA trend.
+        # Skips counter-trend burst entries (most common source of timeouts).
+        # Wait for warmup_ms of data before enforcing — avoids false gates at startup.
+        if (state.trend_ewma > 0.0
+                and now_ms - state.trend_ewma_start_ms >= self.trend_warmup_ms):
+            current_mid = float(book.mid_price)
+            if mid_move_bps > 0 and current_mid < state.trend_ewma:
+                return  # bullish burst but price is below 5-min EWMA — skip
+            if mid_move_bps < 0 and current_mid > state.trend_ewma:
+                return  # bearish burst but price is above 5-min EWMA — skip
+        # ───────────────────────────────────────────────────────────────
 
         # ── Gate 3: Notional AFI ────────────────────────────────────────
         buy_notional = sum(n for _, n, is_buy in state.trade_window if is_buy)
