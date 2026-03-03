@@ -81,7 +81,18 @@ class PaperTrader:
         self._total_net_pnl: float = 0.0
 
         # Live state shared with FastAPI via JSON file
-        self._live_state: dict = {"ts_ms": None, "symbols": {}, "positions": {}}
+        s = self._strategy
+        self._live_state: dict = {
+            "ts_ms": None,
+            "symbols": {},
+            "positions": {},
+            "config": {
+                "take_profit_bps":  float(s.take_profit_bps),
+                "stop_loss_bps":    float(s.stop_loss_bps),
+                "trail_trigger_bps": s.trail_trigger_bps,
+                "trail_bps":        s.trail_bps,
+            },
+        }
         self._state_file: str = os.environ.get("LIVE_STATE_FILE", "/tmp/algo_live_state.json")
 
     # ------------------------------------------------------------------ #

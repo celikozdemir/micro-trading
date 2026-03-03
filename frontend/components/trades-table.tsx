@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { type PaperTradeRow, type LivePosition } from '@/lib/api'
+import { type PaperTradeRow, type LivePosition, type LiveConfig } from '@/lib/api'
 
 function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`
@@ -36,8 +36,25 @@ const EXIT_COLORS: Record<string, string> = {
   timeout:     'text-yellow-500',
 }
 
-// Live row — hold timer ticks every 200ms, P&L value from parent
-function LiveTradeRow({ symbol, pos, compact }: { symbol: string; pos: LivePosition; compact?: boolean }) {
+// Compute SL and TP bps for a live position given strategy config
+function computeLevels(pos: LivePosition, cfg: LiveConfig) {
+  const trailActive = pos.high_watermark_bps >= cfg.trail_trigger_bps
+  const slBps = trailActive
+    ? pos.high_watermark_bps - cfg.trail_bps   // trailing: moves up with peak
+    : -cfg.stop_loss_bps                        // fixed: always -5
+  const tpBps = cfg.take_profit_bps            // always +10
+  return { slBps, tpBps, trailActive }
+}
+
+// Live row — hold timer ticks every 200ms, P&L + levels from parent
+function LiveTradeRow({
+  symbol, pos, cfg, compact,
+}: {
+  symbol: string
+  pos: LivePosition
+  cfg: LiveConfig
+  compact?: boolean
+}) {
   const [holdMs, setHoldMs] = useState(Date.now() - pos.entry_time_ms)
 
   useEffect(() => {
@@ -46,11 +63,14 @@ function LiveTradeRow({ symbol, pos, compact }: { symbol: string; pos: LivePosit
   }, [pos.entry_time_ms])
 
   const pnl = pos.current_pnl_bps
-  // Estimate net: maker round-trip = 4 bps on entry notional
   const notional = pos.entry_price * pos.qty
   const netUsd   = notional * pnl / 10000 - notional * 4 / 10000
   const pnlColor = pnl > 0 ? 'text-emerald-400' : pnl < 0 ? 'text-red-400' : 'text-muted-foreground'
   const rowBg    = pos.side === 'BUY' ? 'bg-emerald-500/5' : 'bg-red-500/5'
+
+  const { slBps, tpBps, trailActive } = computeLevels(pos, cfg)
+  // SL color: yellow when trailing (profitable stop), red when at fixed floor
+  const slColor = trailActive ? 'text-yellow-400' : 'text-red-400/70'
 
   return (
     <tr className={`border-b border-border/40 ${rowBg}`}>
@@ -71,17 +91,20 @@ function LiveTradeRow({ symbol, pos, compact }: { symbol: string; pos: LivePosit
       <td className={`py-2 pr-4 text-right font-medium ${pnlColor}`}>
         {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
       </td>
-      <td className={`py-2 text-right ${pnlColor} opacity-70`}>
+      <td className={`py-2 pr-4 text-right ${pnlColor} opacity-70`}>
         ~{netUsd >= 0 ? '+' : ''}${netUsd.toFixed(4)}
       </td>
-      {!compact && (
-        <td className="py-2 pl-4">
-          <span className="flex items-center gap-1 text-emerald-400/60 italic">
-            <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
-            live
-          </span>
-        </td>
-      )}
+      {/* SL column — red when fixed floor, yellow when trailing has locked in profit */}
+      <td className={`py-2 pr-4 text-right font-medium tabular-nums ${slColor}`}>
+        {slBps >= 0 ? '+' : ''}{slBps.toFixed(1)}
+        {trailActive && (
+          <span className="ml-1 text-muted-foreground/40 text-[10px]">↑</span>
+        )}
+      </td>
+      {/* TP column — always fixed emerald */}
+      <td className="py-2 text-right font-medium tabular-nums text-emerald-400/70">
+        +{tpBps.toFixed(1)}
+      </td>
     </tr>
   )
 }
@@ -89,6 +112,7 @@ function LiveTradeRow({ symbol, pos, compact }: { symbol: string; pos: LivePosit
 export interface LivePositionEntry {
   symbol: string
   pos: LivePosition
+  cfg: LiveConfig
 }
 
 interface Props {
@@ -120,14 +144,15 @@ export default function TradesTable({ trades, compact, livePositions }: Props) {
             <th className="text-right pb-2 pr-4 text-muted-foreground font-normal">Exit</th>
             <th className="text-right pb-2 pr-4 text-muted-foreground font-normal">Hold</th>
             <th className="text-right pb-2 pr-4 text-muted-foreground font-normal">Gross bps</th>
-            <th className="text-right pb-2 text-muted-foreground font-normal">Net USD</th>
-            {!compact && <th className="text-left pb-2 pl-4 text-muted-foreground font-normal">Exit</th>}
+            <th className="text-right pb-2 pr-4 text-muted-foreground font-normal">Net USD</th>
+            <th className="text-right pb-2 pr-4 text-red-400/50 font-normal">SL bps</th>
+            <th className="text-right pb-2 text-emerald-400/50 font-normal">TP bps</th>
           </tr>
         </thead>
         <tbody>
           {/* Live open positions pinned to the top */}
-          {livePositions?.map(({ symbol, pos }) => (
-            <LiveTradeRow key={`live-${symbol}`} symbol={symbol} pos={pos} compact={compact} />
+          {livePositions?.map(({ symbol, pos, cfg }) => (
+            <LiveTradeRow key={`live-${symbol}`} symbol={symbol} pos={pos} cfg={cfg} compact={compact} />
           ))}
 
           {/* Completed trades */}
@@ -153,14 +178,12 @@ export default function TradesTable({ trades, compact, livePositions }: Props) {
                 <td className={`py-2 pr-4 text-right ${win ? 'text-emerald-400' : 'text-red-400'}`}>
                   {t.gross_pnl_bps >= 0 ? '+' : ''}{t.gross_pnl_bps.toFixed(2)}
                 </td>
-                <td className={`py-2 text-right font-medium ${win ? 'text-emerald-400' : 'text-red-400'}`}>
+                <td className={`py-2 pr-4 text-right font-medium ${win ? 'text-emerald-400' : 'text-red-400'}`}>
                   {t.net_pnl_usd >= 0 ? '+' : ''}${t.net_pnl_usd.toFixed(4)}
                 </td>
-                {!compact && (
-                  <td className={`py-2 pl-4 ${EXIT_COLORS[t.exit_reason] ?? 'text-muted-foreground'}`}>
-                    {t.exit_reason.replace('_', ' ')}
-                  </td>
-                )}
+                {/* SL/TP — dashes for closed trades (outcome already known) */}
+                <td className="py-2 pr-4 text-right text-muted-foreground/30">—</td>
+                <td className="py-2 text-right text-muted-foreground/30">—</td>
               </tr>
             )
           })}

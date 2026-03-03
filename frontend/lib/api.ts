@@ -136,8 +136,16 @@ export interface LivePosition {
   high_watermark_bps: number
 }
 
+export interface LiveConfig {
+  take_profit_bps: number
+  stop_loss_bps: number
+  trail_trigger_bps: number
+  trail_bps: number
+}
+
 export interface LiveState {
   ts_ms: number | null
   symbols: Record<string, LiveSymbol>
   positions: Record<string, LivePosition | null>
+  config?: LiveConfig
 }

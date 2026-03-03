@@ -20,11 +20,14 @@ const PLACEHOLDER: ServiceStatus[] = [
   { name: 'database',      display: 'Database',      active: false },
 ]
 
+const DEFAULT_CFG = { take_profit_bps: 10, stop_loss_bps: 5, trail_trigger_bps: 4, trail_bps: 2 }
+
 function livePositionsFrom(state: LiveState | null): LivePositionEntry[] {
   if (!state) return []
+  const cfg = state.config ?? DEFAULT_CFG
   return Object.entries(state.positions)
     .filter(([, pos]) => pos != null)
-    .map(([symbol, pos]) => ({ symbol, pos: pos! }))
+    .map(([symbol, pos]) => ({ symbol, pos: pos!, cfg }))
 }
 
 export default function Dashboard() {

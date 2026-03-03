@@ -14,9 +14,10 @@ const EMPTY_STATS: PaperTradeStats = { total_trades: 0, wins: 0, win_rate: 0, ne
 
 function livePositionsFrom(state: LiveState | null): LivePositionEntry[] {
   if (!state) return []
+  const cfg = state.config ?? { take_profit_bps: 10, stop_loss_bps: 5, trail_trigger_bps: 4, trail_bps: 2 }
   return Object.entries(state.positions)
     .filter(([, pos]) => pos != null)
-    .map(([symbol, pos]) => ({ symbol, pos: pos! }))
+    .map(([symbol, pos]) => ({ symbol, pos: pos!, cfg }))
 }
 
 export default function TradesPage() {
