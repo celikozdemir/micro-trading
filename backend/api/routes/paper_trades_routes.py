@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db.session import get_session
@@ -101,3 +101,10 @@ async def paper_trade_stats(
     today = await _agg(PaperTrade.entry_time_ms >= today_midnight_ms)
 
     return {"all_time": all_time, "today": today}
+
+
+@router.delete("/paper-trades")
+async def clear_paper_trades(session: AsyncSession = Depends(get_session)):
+    result = await session.execute(delete(PaperTrade))
+    await session.commit()
+    return {"deleted": result.rowcount}

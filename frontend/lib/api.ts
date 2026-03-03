@@ -33,6 +33,7 @@ export const getPaperStats = (symbol?: string) => {
   const params = symbol ? `?symbol=${symbol}` : ''
   return req<{ all_time: PaperTradeStats; today: PaperTradeStats }>('GET', `/paper-trades/stats${params}`)
 }
+export const clearPaperTrades = () => req<{ deleted: number }>('DELETE', '/paper-trades')
 
 // Services
 export const getServices = () => req<ServiceStatus[]>('GET', '/services')

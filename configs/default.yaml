@@ -9,14 +9,28 @@ data_streams:
 - markPrice_1s
 strategy:
   type: burst_momentum
-  window_ms: 250             # burst detection window (ms)
-  trade_count_trigger: 10    # min trades in window — not binding during spikes
-  move_bps_trigger: 5.0      # min mid-price move (bps) to consider entry
-  # Regime gate: only enter when market is "hot".
-  # intensity_filter_trades = min agg_trades in last intensity_filter_window_ms.
-  # 0 = disabled. 600 ≈ 60 trades/sec (spike threshold vs normal ~5/sec).
-  intensity_filter_trades: 600
-  intensity_filter_window_ms: 10000
+  window_ms: 250             # burst detection window for AFI / trade-count (ms)
+  trade_count_trigger: 10    # minimum trades in window (noise floor only)
+  move_bps_trigger: 5.0      # minimum mid-price displacement in window (bps)
+
+  # ── Three-gate signal filters (all must fire simultaneously) ──────
+  # Gate 1: Relative intensity spike
+  # Current 1s notional must exceed this multiple of the 60s-avg-per-sec.
+  # 5× = only enter when trading volume is 5 times above normal pace.
+  intensity_spike_mult: 5.0
+
+  # Gate 2: Volatility expansion (EWMA ratio)
+  # sigma_fast (1.5s half-life) must exceed vol_expansion_ratio × sigma_slow (45s half-life).
+  # Filters out entries during flat markets where 5 bps is just ambient noise.
+  sigma_fast_halflife_ms: 500    # reacts within one burst duration (~500ms)
+  sigma_slow_halflife_ms: 45000
+  vol_expansion_ratio: 2.0      # sigma_fast must be 2× background to trigger
+
+  # Gate 3: Notional Aggressive Flow Imbalance
+  # (buy_notional - sell_notional) / total must exceed afi_threshold in direction of move.
+  # 0.4 = buy side must account for ≥70% of notional flow (or ≤30% for shorts).
+  afi_threshold: 0.4
+  # ──────────────────────────────────────────────────────────────────
   entry_qty:
     BTCUSDT: 0.001
     ETHUSDT: 0.01
