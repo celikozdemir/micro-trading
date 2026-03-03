@@ -11,7 +11,7 @@ strategy:
   type: burst_momentum
   window_ms: 250             # burst detection window for AFI / trade-count (ms)
   trade_count_trigger: 5     # minimum trades in window (noise floor only)
-  move_bps_trigger: 2.0      # minimum mid-price displacement in window (bps)
+  move_bps_trigger: 0.5      # almost no price-move required — let flow gates drive timing
 
   # ── Three-gate signal filters (all must fire simultaneously) ──────
   # Gate 1: Relative intensity spike
@@ -44,7 +44,7 @@ strategy:
     # Maker fill model cost: 2 bps fee/side × 2 = 4 bps round-trip (no slippage).
     # Break-even with 62% win rate: TP net = 10-4 = +6 bps, SL net = -(6+4) = -10 bps.
     # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
-    max_hold_ms: 3000         # 3 s is enough to reach 10 bps in a real spike
+    max_hold_ms: 5000         # 5s: give genuine bursts more time to reach TP
     take_profit_bps: 10.0       # gross TP; net = +6 bps after 4 bps maker cost
     stop_loss_bps: 5.0          # gross SL; net = -9 bps — 3 bps was below market noise floor
     ratchet_trigger_bps: 5.0    # once gross >= 5 bps, activate floor stop
