@@ -31,11 +31,12 @@ strategy:
   # 0.5 = buy side must account for ≥75% of notional flow (or ≤25% for shorts).
   afi_threshold: 0.5
 
-  # Gate 4: Trend direction filter
-  # Only enter LONG when mid > 5-min EWMA trend; only SHORT when mid < trend.
-  # Blocks counter-trend burst entries which are the main source of timeout losses.
-  trend_halflife_ms: 300000   # 5-min half-life; slow-moving trend reference
-  trend_warmup_ms: 300000     # require 5 min of data before enforcing this gate
+  # Gate 4: Dual-trend crossover filter
+  # 1-min EWMA > 5-min EWMA = uptrend → LONG only; reverse = downtrend → SHORT only.
+  # More responsive than price-vs-slow-trend; filters intraday reversals.
+  trend_halflife_ms: 300000        # 5-min slow EWMA
+  short_trend_halflife_ms: 60000   # 1-min fast EWMA
+  trend_warmup_ms: 300000          # require 5 min before enforcing (slow EWMA stabilization)
   # ──────────────────────────────────────────────────────────────────
   entry_qty:
     BTCUSDT: 0.001

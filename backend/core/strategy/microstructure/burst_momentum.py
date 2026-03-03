@@ -74,8 +74,9 @@ class SymbolState:
     last_ewma_mid: float = 0.0       # previous mid used in EWMA update
     last_ewma_ms: int = 0            # timestamp of last EWMA update
 
-    # 5-minute trend EWMA — level (not return), used for direction gate
-    trend_ewma: float = 0.0          # EWMA of mid-price with long halflife
+    # Dual trend EWMAs for momentum-aligned entry (crossover approach)
+    trend_ewma: float = 0.0          # slow EWMA of mid-price (5-min halflife)
+    short_trend_ewma: float = 0.0    # fast EWMA of mid-price (1-min halflife)
     trend_ewma_start_ms: int = 0     # timestamp of first observation (warm-up check)
 
     # Most recent book tick (needed for exit checks triggered by agg_trades)
@@ -158,11 +159,13 @@ class BurstMomentumStrategy:
         self.sigma_slow_halflife_ms: float = float(s.get("sigma_slow_halflife_ms", 45_000))
         self.vol_expansion_ratio: float = float(s.get("vol_expansion_ratio", 2.5))
 
-        # Gate 4: Trend direction filter
-        # trend_halflife_ms controls how quickly the trend EWMA responds.
-        # 300_000 ms (5 min) = smooth, slow-moving trend reference.
+        # Gate 4: Dual-trend direction filter (crossover)
+        # Slow EWMA (5-min): medium-term trend reference.
+        # Fast EWMA (1-min): short-term momentum direction.
+        # Entry allowed only when both agree: fast > slow = uptrend (LONG only).
         self.trend_halflife_ms: float = float(s.get("trend_halflife_ms", 300_000))
-        # Require this many ms of data before the trend gate is enforced.
+        self.short_trend_halflife_ms: float = float(s.get("short_trend_halflife_ms", 60_000))
+        # Require this many ms before enforcing — slow EWMA needs ~5 min to stabilize.
         self.trend_warmup_ms: int = int(s.get("trend_warmup_ms", 300_000))
 
         # Gate 3: Notional AFI
@@ -271,16 +274,19 @@ class BurstMomentumStrategy:
         alpha_fast = 1.0 - math.exp(-dt_ms / self.sigma_fast_halflife_ms)
         alpha_slow = 1.0 - math.exp(-dt_ms / self.sigma_slow_halflife_ms)
         alpha_trend = 1.0 - math.exp(-dt_ms / self.trend_halflife_ms)
+        alpha_short_trend = 1.0 - math.exp(-dt_ms / self.short_trend_halflife_ms)
 
         state.sigma_fast = alpha_fast * ret + (1.0 - alpha_fast) * state.sigma_fast
         state.sigma_slow = alpha_slow * ret + (1.0 - alpha_slow) * state.sigma_slow
 
-        # Trend EWMA tracks the price level (not returns)
+        # Trend EWMAs track price level (not returns) for crossover gate
         if state.trend_ewma == 0.0:
             state.trend_ewma = mid
+            state.short_trend_ewma = mid
             state.trend_ewma_start_ms = now_ms
         else:
             state.trend_ewma = alpha_trend * mid + (1.0 - alpha_trend) * state.trend_ewma
+            state.short_trend_ewma = alpha_short_trend * mid + (1.0 - alpha_short_trend) * state.short_trend_ewma
 
         state.last_ewma_mid = mid
         state.last_ewma_ms = now_ms
@@ -336,17 +342,19 @@ class BurstMomentumStrategy:
         if book.spread_bps > self.max_spread_bps:
             return
 
-        # ── Gate 4: Trend direction filter ─────────────────────────────
-        # Only enter in the direction of the 5-minute EWMA trend.
-        # Skips counter-trend burst entries (most common source of timeouts).
-        # Wait for warmup_ms of data before enforcing — avoids false gates at startup.
+        # ── Gate 4: Dual-trend crossover filter ────────────────────────
+        # Crossover: 1-min EWMA vs 5-min EWMA determines momentum direction.
+        #   fast > slow → uptrend  → LONG only
+        #   fast < slow → downtrend → SHORT only
+        # More responsive than price vs slow EWMA; filters intraday reversals.
+        # Only enforce after the slow EWMA has had enough warmup to stabilize.
         if (state.trend_ewma > 0.0
                 and now_ms - state.trend_ewma_start_ms >= self.trend_warmup_ms):
-            current_mid = float(book.mid_price)
-            if mid_move_bps > 0 and current_mid < state.trend_ewma:
-                return  # bullish burst but price is below 5-min EWMA — skip
-            if mid_move_bps < 0 and current_mid > state.trend_ewma:
-                return  # bearish burst but price is above 5-min EWMA — skip
+            is_uptrend = state.short_trend_ewma > state.trend_ewma
+            if mid_move_bps > 0 and not is_uptrend:
+                return  # bullish burst but 1-min EWMA is below 5-min — downtrend — skip
+            if mid_move_bps < 0 and is_uptrend:
+                return  # bearish burst but 1-min EWMA is above 5-min — uptrend — skip
         # ───────────────────────────────────────────────────────────────
 
         # ── Gate 3: Notional AFI ────────────────────────────────────────
