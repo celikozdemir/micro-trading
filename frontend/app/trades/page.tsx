@@ -112,7 +112,7 @@ export default function TradesPage() {
         ) : (
           <button
             onClick={handleClear}
-            className="px-2.5 py-1.5 rounded-lg text-xs text-muted-foreground hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-colors"
+            className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-400 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-colors"
           >
             Clear trades
           </button>
