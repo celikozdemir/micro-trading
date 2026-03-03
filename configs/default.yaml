@@ -49,8 +49,8 @@ strategy:
     max_hold_ms: 5000         # 5s: give genuine bursts more time to reach TP
     take_profit_bps: 10.0       # gross TP; net = +6 bps after 4 bps maker cost
     stop_loss_bps: 5.0          # gross SL; net = -9 bps — 3 bps was below market noise floor
-    ratchet_trigger_bps: 5.0    # once gross >= 5 bps, activate floor stop
-    ratchet_floor_bps: 4.0      # floor stop at 4 bps gross = 0 net (fee breakeven)
+    trail_trigger_bps: 4.0      # start trailing once gross >= 4 bps (fee breakeven)
+    trail_bps: 2.0              # trail 2 bps below high watermark (peak=6→stop=4, peak=8→stop=6)
   cooldown_ms: 2000           # 2s: prevents re-entering the same burst 3-4 times
 risk:
   max_trades_per_min: 60

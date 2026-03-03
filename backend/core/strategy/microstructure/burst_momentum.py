@@ -48,7 +48,7 @@ class OpenPosition:
     entry_price: Decimal
     qty: Decimal
     entry_mid: Decimal   # mid at entry, used for bps calculations
-    ratchet_active: bool = False  # True once pnl_bps >= ratchet_trigger_bps
+    high_watermark_bps: float = 0.0  # best gross pnl_bps seen since entry (for trailing stop)
 
 
 @dataclass
@@ -142,10 +142,12 @@ class BurstMomentumStrategy:
         self.stop_loss_bps: Decimal = Decimal(str(ex["stop_loss_bps"]))
         self.max_hold_ms: int = ex["max_hold_ms"]
         self.cooldown_ms: int = s["cooldown_ms"]
-        # Ratchet stop: once gross >= ratchet_trigger_bps, floor the stop at ratchet_floor_bps.
-        # Default: trigger at 5 bps (half of 10 bps TP), floor at 4 bps (= fee cost = 0 net).
-        self.ratchet_trigger_bps: Decimal = Decimal(str(ex.get("ratchet_trigger_bps", 5.0)))
-        self.ratchet_floor_bps: Decimal = Decimal(str(ex.get("ratchet_floor_bps", 4.0)))
+        # Trailing stop: once gross >= trail_trigger_bps, stop trails trail_bps below
+        # the high watermark. The stop moves up with price but never back down.
+        # trail_trigger_bps=4.0 = fee cost threshold — only trail once we've covered fees.
+        # trail_bps=2.0 — trail 2 bps below peak (net = peak - 2 - 4 fees).
+        self.trail_trigger_bps: float = float(ex.get("trail_trigger_bps", 4.0))
+        self.trail_bps: float = float(ex.get("trail_bps", 2.0))
 
         # Risk
         self.max_spread_bps: Decimal = Decimal(str(config["risk"]["max_spread_bps"]))
@@ -400,11 +402,13 @@ class BurstMomentumStrategy:
 
         if pos.side == "BUY":
             pnl_bps = (book.bid_price - pos.entry_price) / pos.entry_mid * 10000
-            if pnl_bps >= self.ratchet_trigger_bps:
-                pos.ratchet_active = True
-            # Ratchet active: stop loss floor rises to ratchet_floor_bps gross (≈ 0 net)
-            if pos.ratchet_active:
-                is_stopped = pnl_bps <= self.ratchet_floor_bps
+            pnl_f = float(pnl_bps)
+            # Update trailing high watermark
+            if pnl_f > pos.high_watermark_bps:
+                pos.high_watermark_bps = pnl_f
+            # Trailing stop: once peak >= trigger, stop trails trail_bps below the peak
+            if pos.high_watermark_bps >= self.trail_trigger_bps:
+                is_stopped = pnl_f <= pos.high_watermark_bps - self.trail_bps
             else:
                 is_stopped = pnl_bps <= -self.stop_loss_bps
             if pnl_bps >= self.take_profit_bps:
@@ -419,10 +423,11 @@ class BurstMomentumStrategy:
                 gross_pnl_usd = (exit_fill.price - pos.entry_price) * pos.qty
         else:  # SELL
             pnl_bps = (pos.entry_price - book.ask_price) / pos.entry_mid * 10000
-            if pnl_bps >= self.ratchet_trigger_bps:
-                pos.ratchet_active = True
-            if pos.ratchet_active:
-                is_stopped = pnl_bps <= self.ratchet_floor_bps
+            pnl_f = float(pnl_bps)
+            if pnl_f > pos.high_watermark_bps:
+                pos.high_watermark_bps = pnl_f
+            if pos.high_watermark_bps >= self.trail_trigger_bps:
+                is_stopped = pnl_f <= pos.high_watermark_bps - self.trail_bps
             else:
                 is_stopped = pnl_bps <= -self.stop_loss_bps
             if pnl_bps >= self.take_profit_bps:
