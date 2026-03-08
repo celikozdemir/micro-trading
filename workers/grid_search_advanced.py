@@ -5,11 +5,11 @@ Loads ticks from DB ONCE, then sweeps every parameter combination in memory.
 Prints a ranked table sorted by net P&L.
 
 Usage:
-    python -m workers.grid_search --symbol BTCUSDT
-    python -m workers.grid_search --symbol ETHUSDT --top 20
-    python -m workers.grid_search --symbol BTCUSDT --min-trades 5
-    python -m workers.grid_search --symbol BTCUSDT --start 2026-03-01T16:57:00 --end 2026-03-01T17:57:00
-    python -m workers.grid_search --symbol BTCUSDT --max-ticks 50000
+    python -m workers.grid_search_advanced --symbol BTCUSDT
+    python -m workers.grid_search_advanced --symbol ETHUSDT --primary BTCUSDT --top 20
+    python -m workers.grid_search_advanced --symbol BTCUSDT --min-trades 5
+    python -m workers.grid_search_advanced --symbol BTCUSDT --start 2026-03-01T16:57:00 --end 2026-03-01T17:57:00
+    python -m workers.grid_search_advanced --symbol BTCUSDT --max-ticks 50000
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import uvloop
 from backend.core.backtester.fill_model import FillModel
 from backend.core.backtester.tick_replayer import TickReplayer
 from backend.core.data.normalizer import AggTrade, BookTick
-from backend.core.strategy.microstructure.burst_momentum import BurstMomentumStrategy
+from backend.core.strategy.microstructure.advanced_momentum import AdvancedMomentumStrategy
 from backend.db.session import AsyncSessionLocal
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -58,13 +58,16 @@ GRID = {
     "max_hold_ms":             [5000, 15000, 30000], # trailing stop era — timeout is last resort
     "cooldown_ms":             [2000],               # fixed — proven at live level
     # Gate 1: higher mult = fewer but higher-conviction bursts (live = 8×, push to 15-20×)
-    "intensity_spike_mult":    [8.0, 12.0, 16.0, 20.0],
+    "intensity_spike_mult":    [8.0, 12.0],
     # Gate 2: higher ratio = only during real volatility expansion (live = 2.0)
-    "vol_expansion_ratio":     [2.0, 2.5, 3.0],
+    "vol_expansion_ratio":     [2.0, 2.5],
     # Gate 3: stricter AFI = require stronger directional imbalance (live = 0.5)
-    "afi_threshold":           [0.5, 0.6, 0.7],
+    "afi_threshold":           [0.4, 0.6],
+    # Gate 5: Order Book Imbalance
+    "obi_threshold":           [0.1, 0.2, 0.4],
+    # Adaptive Volatility
+    "adaptive_vol_multiplier": [0.0, 2.0, 3.0]
 }
-# Total combos: 2×3×3×3×3×4×3×3 = 5832  → same size but exploring the right space
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
@@ -81,7 +84,7 @@ class GridResult:
     pct_timeout: float
 
 
-def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict, fill_model: FillModel) -> GridResult:
+def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict, fill_model: FillModel, primary_symbol: str) -> GridResult:
     """Replay cached ticks with the given param override."""
     config = {
         **base_config,
@@ -95,6 +98,8 @@ def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict,
             "intensity_spike_mult":    params.get("intensity_spike_mult", 5.0),
             "vol_expansion_ratio":     params.get("vol_expansion_ratio", 2.0),
             "afi_threshold":           params.get("afi_threshold", 0.4),
+            "obi_threshold":           params.get("obi_threshold", 0.2),
+            "adaptive_vol_multiplier": params.get("adaptive_vol_multiplier", 0.0),
             "sigma_fast_halflife_ms":  500,    # fixed — tuned to react within one burst
             "sigma_slow_halflife_ms":  45_000, # fixed — 45s baseline
             "exit": {
@@ -105,7 +110,7 @@ def _run_once(ticks: list[BookTick | AggTrade], params: dict, base_config: dict,
         },
     }
 
-    strategy = BurstMomentumStrategy(config, fill_model)
+    strategy = AdvancedMomentumStrategy(config, fill_model, primary_symbol=primary_symbol)
     for event in ticks:
         strategy.on_event(event)
 
@@ -239,6 +244,8 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
         print(f"    sigma_slow_halflife_ms: 45000")
         print(f"    vol_expansion_ratio: {p.get('vol_expansion_ratio', 2.0)}")
         print(f"    afi_threshold: {p.get('afi_threshold', 0.4)}")
+        print(f"    obi_threshold: {p.get('obi_threshold', 0.2)}")
+        print(f"    adaptive_vol_multiplier: {p.get('adaptive_vol_multiplier', 0.0)}")
         print("    exit:")
         print(f"      take_profit_bps: {p['take_profit_bps']}")
         print(f"      stop_loss_bps: {p['stop_loss_bps']}")
@@ -249,31 +256,31 @@ def _print_table(results: list[GridResult], top: int, round_trip_bps: float = TA
     print()
 
 
-async def run(symbol: str, top: int, min_trades: int, start: datetime | None, end: datetime | None, max_ticks: int = 100_000, maker: bool = False) -> None:
+async def run(symbol: str, primary_symbol: str, top: int, min_trades: int, start: datetime | None, end: datetime | None, max_ticks: int = 100_000) -> None:
     # Import here to avoid circular import at module level
     from backend.config import load_trading_config
 
     base_config = load_trading_config()
 
     # ── Load ticks once ──────────────────────────────────────────────────────
-    # When both start and end are given, load all ticks in the window (no limit).
-    # Both streams will be synchronized — essential for correct backtesting.
-    # Keep the window ≤ 5 minutes during volatile periods to avoid OOM.
-    # When only start is given (no end), fall back to the tick cap with a
-    # trade-heavy split so at least agg_trades cover a useful time range.
     if start is not None and end is not None:
-        log.info(f"Loading ALL ticks for {symbol} in [{start} → {end}] (no limit)…")
+        log.info(f"Loading ALL ticks for {symbol} (and {primary_symbol}) in [{start} → {end}] (no limit)…")
         replay_kwargs: dict = {}
     else:
         book_cap = min(20_000, max_ticks // 5)
         trade_cap = max_ticks - book_cap
-        log.info(f"Loading ticks for {symbol} from DB (book_cap={book_cap:,}, trade_cap={trade_cap:,})…")
+        log.info(f"Loading ticks for {symbol} (and {primary_symbol}) from DB (book_cap={book_cap:,}, trade_cap={trade_cap:,})…")
         replay_kwargs = {"book_limit": book_cap, "trade_limit": trade_cap}
 
     async with AsyncSessionLocal() as session:
         replayer = TickReplayer(session)
         ticks: list[BookTick | AggTrade] = []
-        async for event in replayer.replay(symbol, start=start, end=end, **replay_kwargs):
+        
+        symbols_to_load = [symbol]
+        if symbol != primary_symbol:
+            symbols_to_load.append(primary_symbol)
+            
+        async for event in replayer.replay(symbols_to_load, start=start, end=end, **replay_kwargs):
             ticks.append(event)
     log.info(f"Loaded {len(ticks):,} ticks into memory")
 
@@ -282,15 +289,11 @@ async def run(symbol: str, top: int, min_trades: int, start: datetime | None, en
         return
 
     # ── Build fill model ─────────────────────────────────────────────────────
-    if maker:
-        from decimal import Decimal as D
-        fill_model = FillModel(slippage_bps=D("0.0"), fee_bps=D("2.0"))
-        round_trip_bps = MAKER_ROUND_TRIP_BPS
-        log.info("Fill model: MAKER (fee=2 bps/side, slippage=0)")
-    else:
-        fill_model = FillModel()
-        round_trip_bps = TAKER_ROUND_TRIP_BPS
-        log.info("Fill model: TAKER (fee=4 bps/side, slippage=1.5 bps)")
+    from decimal import Decimal as D
+    # Maker default for advanced strategy
+    fill_model = FillModel(slippage_bps=D("0.0"), fee_bps=D("2.0"))
+    round_trip_bps = MAKER_ROUND_TRIP_BPS
+    log.info("Fill model: MAKER (fee=2 bps/side, slippage=0)")
 
     # ── Build parameter combinations ─────────────────────────────────────────
     keys = list(GRID.keys())
@@ -301,7 +304,7 @@ async def run(symbol: str, top: int, min_trades: int, start: datetime | None, en
     results: list[GridResult] = []
     for i, values in enumerate(combos):
         params = dict(zip(keys, values))
-        r = _run_once(ticks, params, base_config, fill_model)
+        r = _run_once(ticks, params, base_config, fill_model, primary_symbol)
         if r.n_trades >= min_trades:
             results.append(r)
         if (i + 1) % 100 == 0:
@@ -312,20 +315,20 @@ async def run(symbol: str, top: int, min_trades: int, start: datetime | None, en
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Burst momentum grid search")
+    parser = argparse.ArgumentParser(description="Advanced Burst momentum grid search")
     parser.add_argument("--symbol", default="BTCUSDT")
+    parser.add_argument("--primary", default="BTCUSDT", help="Primary symbol for correlation")
     parser.add_argument("--top", type=int, default=15, help="Show top N results")
     parser.add_argument("--min-trades", type=int, default=3, help="Minimum trades to include a result")
     parser.add_argument("--start", default=None, help="ISO datetime e.g. 2026-03-01T09:00:00")
     parser.add_argument("--end", default=None, help="ISO datetime e.g. 2026-03-01T10:00:00")
     parser.add_argument("--max-ticks", type=int, default=100_000, help="Max ticks to load (default 100k, prevents OOM)")
-    parser.add_argument("--maker", action="store_true", help="Use maker fill model (fee=2 bps/side, slippage=0) instead of taker")
     args = parser.parse_args()
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc) if args.start else None
     end = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc) if args.end else None
 
-    await run(args.symbol, args.top, args.min_trades, start, end, args.max_ticks, args.maker)
+    await run(args.symbol, args.primary, args.top, args.min_trades, start, end, args.max_ticks)
 
 
 if __name__ == "__main__":

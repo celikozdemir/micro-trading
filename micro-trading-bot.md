@@ -432,5 +432,5 @@ Once you have a few hours of data that spans a weekday session, run the full gri
   --end 2026-03-02T14:30:00 \
   --maker
 
-In the frontend, i need a button to clear the list of paper trades, and delete them in the db as well.
+
 I also need to be able to add more tickers, so I need this to be dynamic. Also in the front end the tabs should change as i add one more ticker.

@@ -53,7 +53,7 @@ class TickReplayer:
 
     async def replay(
         self,
-        symbol: str,
+        symbol: str | list[str],
         start: datetime | None = None,
         end: datetime | None = None,
         limit: int | None = None,
@@ -81,13 +81,15 @@ class TickReplayer:
             yield event
 
     async def _load_book_ticks(
-        self, symbol: str, start: datetime | None, end: datetime | None, limit: int | None
+        self, symbol: str | list[str], start: datetime | None, end: datetime | None, limit: int | None
     ) -> list[BookTick]:
-        stmt = (
-            select(BookTickModel)
-            .where(BookTickModel.symbol == symbol)
-            .order_by(BookTickModel.timestamp_exchange)
-        )
+        stmt = select(BookTickModel).order_by(BookTickModel.timestamp_exchange)
+        
+        if isinstance(symbol, str):
+            stmt = stmt.where(BookTickModel.symbol == symbol)
+        else:
+            stmt = stmt.where(BookTickModel.symbol.in_(symbol))
+            
         if start:
             stmt = stmt.where(BookTickModel.timestamp_exchange >= start)
         if end:
@@ -98,13 +100,15 @@ class TickReplayer:
         return [_book_tick_from_row(r) for r in result.scalars()]
 
     async def _load_agg_trades(
-        self, symbol: str, start: datetime | None, end: datetime | None, limit: int | None
+        self, symbol: str | list[str], start: datetime | None, end: datetime | None, limit: int | None
     ) -> list[AggTrade]:
-        stmt = (
-            select(AggTradeModel)
-            .where(AggTradeModel.symbol == symbol)
-            .order_by(AggTradeModel.timestamp_exchange)
-        )
+        stmt = select(AggTradeModel).order_by(AggTradeModel.timestamp_exchange)
+        
+        if isinstance(symbol, str):
+            stmt = stmt.where(AggTradeModel.symbol == symbol)
+        else:
+            stmt = stmt.where(AggTradeModel.symbol.in_(symbol))
+            
         if start:
             stmt = stmt.where(AggTradeModel.timestamp_exchange >= start)
         if end:
