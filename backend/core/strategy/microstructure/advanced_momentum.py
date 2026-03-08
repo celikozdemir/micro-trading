@@ -165,6 +165,8 @@ class AdvancedMomentumStrategy:
             }
         
         self.cooldown_ms: int = s.get("cooldown_ms", 2000)
+        self.max_spread_bps: Decimal = Decimal(str(config["risk"]["max_spread_bps"]))
+        
         self.sigma_fast_halflife_ms: float = float(s.get("sigma_fast_halflife_ms", 1500))
         self.sigma_slow_halflife_ms: float = float(s.get("sigma_slow_halflife_ms", 45000))
         # ───────────────────────────────────────────────────────────────
