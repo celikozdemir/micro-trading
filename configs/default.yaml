@@ -45,6 +45,22 @@ strategy:
   adaptive_vol_multiplier: 0.0
   # ──────────────────────────────────────────────────────────────────
   
+  # ── Per-Symbol Overrides ──────────────────────────────────────────
+  # BTC has thicker books and lower volatility; ETH is thinner and wilder.
+  symbol_overrides:
+    BTCUSDT:
+      obi_threshold: 0.25           # Require heavier imbalance on thick BTC books
+      intensity_spike_mult: 6.0     # Lower spike threshold for thick books
+      move_bps_trigger: 0.5         # Smaller physical move required
+    ETHUSDT:
+      obi_threshold: 0.15           # ETH books are thinner, 15% is significant
+      intensity_spike_mult: 10.0    # Require massive volume spikes to avoid ETH noise
+      move_bps_trigger: 1.0         # Require larger physical moves to confirm
+      exit:
+        take_profit_bps: 12.0       # Larger TP for higher volatility
+        stop_loss_bps: 6.0
+  # ──────────────────────────────────────────────────────────────────
+  
   entry_qty:
     BTCUSDT: 0.001
     ETHUSDT: 0.01

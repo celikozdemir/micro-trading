@@ -129,62 +129,43 @@ class AdvancedMomentumStrategy:
         # ── Primary Symbol (for cross-asset correlation) ───────────────
         self.primary_symbol = primary_symbol
 
-        # Core burst detection
-        self.window_ms: int = s["window_ms"]
-        self.trade_count_trigger: int = s["trade_count_trigger"]
-        self.move_bps_trigger: Decimal = Decimal(str(s["move_bps_trigger"]))
-
-        # Position sizing
-        self.entry_qty: dict[str, Decimal] = {
-            sym: Decimal(str(qty)) for sym, qty in s["entry_qty"].items()
-        }
-
-        # Exit parameters
-        ex = s["exit"]
-        self.take_profit_bps: Decimal = Decimal(str(ex["take_profit_bps"]))
-        self.stop_loss_bps: Decimal = Decimal(str(ex["stop_loss_bps"]))
-        self.max_hold_ms: int = ex["max_hold_ms"]
-        self.cooldown_ms: int = s["cooldown_ms"]
-        # Trailing stop: once gross >= trail_trigger_bps, stop trails trail_bps below
-        # the high watermark. The stop moves up with price but never back down.
-        # trail_trigger_bps=4.0 = fee cost threshold — only trail once we've covered fees.
-        # trail_bps=2.0 — trail 2 bps below peak (net = peak - 2 - 4 fees).
-        self.trail_trigger_bps: float = float(ex.get("trail_trigger_bps", 4.0))
-        self.trail_bps: float = float(ex.get("trail_bps", 2.0))
-
-        # Risk
-        self.max_spread_bps: Decimal = Decimal(str(config["risk"]["max_spread_bps"]))
-
-        # ── NEW: three-gate signal parameters ──────────────────────────
-        # Gate 1: Relative intensity spike
-        self.intensity_spike_mult: float = float(s.get("intensity_spike_mult", 5.0))
-
-        # Gate 2: Volatility expansion
+        # Determine which symbols we care about
+        symbols = config.get("symbols", ["BTCUSDT", "ETHUSDT"])
+        
+        # ── Parameter resolution (supports per-symbol overrides) ────────
+        self.sym_params: dict[str, dict] = {}
+        overrides = s.get("symbol_overrides", {})
+        
+        for sym in symbols:
+            sym_s = {**s, **overrides.get(sym, {})}  # Override base with symbol-specific
+            sym_ex = {**ex, **overrides.get(sym, {}).get("exit", {})} # Override exit 
+            
+            self.sym_params[sym] = {
+                "window_ms": int(sym_s.get("window_ms", 250)),
+                "trade_count_trigger": int(sym_s.get("trade_count_trigger", 5)),
+                "move_bps_trigger": float(sym_s.get("move_bps_trigger", 0.5)),
+                
+                "take_profit_bps": float(sym_ex.get("take_profit_bps", 10.0)),
+                "stop_loss_bps": float(sym_ex.get("stop_loss_bps", 5.0)),
+                "max_hold_ms": int(sym_ex.get("max_hold_ms", 30000)),
+                "trail_trigger_bps": float(sym_ex.get("trail_trigger_bps", 4.0)),
+                "trail_bps": float(sym_ex.get("trail_bps", 2.0)),
+                
+                "intensity_spike_mult": float(sym_s.get("intensity_spike_mult", 5.0)),
+                "vol_expansion_ratio": float(sym_s.get("vol_expansion_ratio", 2.5)),
+                "trend_halflife_ms": float(sym_s.get("trend_halflife_ms", 300_000)),
+                "short_trend_halflife_ms": float(sym_s.get("short_trend_halflife_ms", 60_000)),
+                "trend_warmup_ms": int(sym_s.get("trend_warmup_ms", 300_000)),
+                
+                "afi_threshold": float(sym_s.get("afi_threshold", 0.4)),
+                "obi_threshold": float(sym_s.get("obi_threshold", 0.2)),
+                "short_only": bool(sym_s.get("short_only", True)),
+                "adaptive_vol_multiplier": float(sym_s.get("adaptive_vol_multiplier", 0.0)),
+            }
+        
+        self.cooldown_ms: int = s.get("cooldown_ms", 2000)
         self.sigma_fast_halflife_ms: float = float(s.get("sigma_fast_halflife_ms", 1500))
-        self.sigma_slow_halflife_ms: float = float(s.get("sigma_slow_halflife_ms", 45_000))
-        self.vol_expansion_ratio: float = float(s.get("vol_expansion_ratio", 2.5))
-
-        # Gate 4: Dual-trend direction filter (crossover)
-        # Slow EWMA (5-min): medium-term trend reference.
-        # Fast EWMA (1-min): short-term momentum direction.
-        # Entry allowed only when both agree: fast > slow = uptrend (LONG only).
-        self.trend_halflife_ms: float = float(s.get("trend_halflife_ms", 300_000))
-        self.short_trend_halflife_ms: float = float(s.get("short_trend_halflife_ms", 60_000))
-        # Require this many ms before enforcing — slow EWMA needs ~5 min to stabilize.
-        self.trend_warmup_ms: int = int(s.get("trend_warmup_ms", 300_000))
-
-        # Gate 3: Notional AFI
-        self.afi_threshold: float = float(s.get("afi_threshold", 0.4))
-
-        # Gate 5: Order Book Imbalance (OBI)
-        # (bid_qty - ask_qty) / (bid_qty + ask_qty)
-        self.obi_threshold: float = float(s.get("obi_threshold", 0.2))
-        
-        # Directional Constraint
-        self.short_only: bool = bool(s.get("short_only", True))
-        
-        # Adaptive Thresholds: dynamically scale TP/SL based on sigma_slow
-        self.adaptive_vol_multiplier: float = float(s.get("adaptive_vol_multiplier", 0.0))
+        self.sigma_slow_halflife_ms: float = float(s.get("sigma_slow_halflife_ms", 45000))
         # ───────────────────────────────────────────────────────────────
 
         self.fill_model = fill_model
@@ -214,7 +195,8 @@ class AdvancedMomentumStrategy:
 
         # Track mid-price history for velocity calculation
         state.mid_history.append((bt.timestamp_exchange_ms, bt.mid_price))
-        cutoff = bt.timestamp_exchange_ms - self.window_ms
+        p = self.sym_params.get(bt.symbol)
+        cutoff = bt.timestamp_exchange_ms - (p["window_ms"] if p else 250)
         while state.mid_history and state.mid_history[0][0] < cutoff:
             state.mid_history.popleft()
 
@@ -228,9 +210,13 @@ class AdvancedMomentumStrategy:
         notional = float(at.qty * at.price)
         is_buy_aggressor = not at.is_buyer_maker
 
+        p = self.sym_params.get(at.symbol)
+        if not p:
+            return
+            
         # 250 ms window — stores notional (not raw qty) for AFI
         state.trade_window.append((now_ms, notional, is_buy_aggressor))
-        cutoff_burst = now_ms - self.window_ms
+        cutoff_burst = now_ms - p["window_ms"]
         while state.trade_window and state.trade_window[0][0] < cutoff_burst:
             state.trade_window.popleft()
 
@@ -257,7 +243,7 @@ class AdvancedMomentumStrategy:
         # Timeout check — fire via agg_trade when book ticks are sparse
         if state.open_position is not None and state.last_book is not None:
             hold_ms = now_ms - state.open_position.entry_time_ms
-            if hold_ms >= self.max_hold_ms:
+            if hold_ms >= p["max_hold_ms"]:
                 self._check_exit(at.symbol, now_ms, state.last_book)
                 return
 
@@ -288,8 +274,14 @@ class AdvancedMomentumStrategy:
         # Time-aware EWMA decay: alpha = 1 - exp(-dt / halflife)
         alpha_fast = 1.0 - math.exp(-dt_ms / self.sigma_fast_halflife_ms)
         alpha_slow = 1.0 - math.exp(-dt_ms / self.sigma_slow_halflife_ms)
-        alpha_trend = 1.0 - math.exp(-dt_ms / self.trend_halflife_ms)
-        alpha_short_trend = 1.0 - math.exp(-dt_ms / self.short_trend_halflife_ms)
+        
+        # We need trend halflives. If sym_params doesn't exist (e.g. during replay of unconfigured symbol), use defaults.
+        p = self.sym_params.get(list(self.sym_params.keys())[0], {})
+        trend_halflife = p.get("trend_halflife_ms", 300_000)
+        short_trend_halflife = p.get("short_trend_halflife_ms", 60_000)
+        
+        alpha_trend = 1.0 - math.exp(-dt_ms / trend_halflife)
+        alpha_short_trend = 1.0 - math.exp(-dt_ms / short_trend_halflife)
 
         state.sigma_fast = alpha_fast * ret + (1.0 - alpha_fast) * state.sigma_fast
         state.sigma_slow = alpha_slow * ret + (1.0 - alpha_slow) * state.sigma_slow
@@ -314,11 +306,12 @@ class AdvancedMomentumStrategy:
         state = self._get_state(symbol)
         book = state.last_book
 
-        if book is None:
+        p = self.sym_params.get(symbol)
+        if not p:
             return
 
         # Floor: minimum trade count in the burst window (prevents entry with 1-2 trades)
-        if len(state.trade_window) < self.trade_count_trigger:
+        if len(state.trade_window) < p["trade_count_trigger"]:
             return
 
         # Mid-price velocity — price must have moved meaningfully in the window
@@ -328,7 +321,7 @@ class AdvancedMomentumStrategy:
         if window_start_mid == 0:
             return
         mid_move_bps = (book.mid_price - window_start_mid) / window_start_mid * 10000
-        if abs(mid_move_bps) < self.move_bps_trigger:
+        if abs(mid_move_bps) < p["move_bps_trigger"]:
             return
 
         # ── Gate 1: Relative intensity spike ───────────────────────────
@@ -341,7 +334,7 @@ class AdvancedMomentumStrategy:
 
         notional_1s = sum(n for _, n in state.intensity_1s_window)
         avg_per_sec = sum(n for _, n in state.baseline_window) / (baseline_span_ms / 1000.0)
-        if avg_per_sec == 0 or notional_1s < self.intensity_spike_mult * avg_per_sec:
+        if avg_per_sec == 0 or notional_1s < p["intensity_spike_mult"] * avg_per_sec:
             return
         # ───────────────────────────────────────────────────────────────
 
@@ -349,7 +342,7 @@ class AdvancedMomentumStrategy:
         # Require enough history for sigma_slow to be meaningful.
         if state.sigma_slow < 1e-10:
             return
-        if state.sigma_fast < self.vol_expansion_ratio * state.sigma_slow:
+        if state.sigma_fast < p["vol_expansion_ratio"] * state.sigma_slow:
             return
         # ───────────────────────────────────────────────────────────────
 
@@ -364,7 +357,7 @@ class AdvancedMomentumStrategy:
         # More responsive than price vs slow EWMA; filters intraday reversals.
         # Only enforce after the slow EWMA has had enough warmup to stabilize.
         if (state.trend_ewma > 0.0
-                and now_ms - state.trend_ewma_start_ms >= self.trend_warmup_ms):
+                and now_ms - state.trend_ewma_start_ms >= p["trend_warmup_ms"]):
             is_uptrend = state.short_trend_ewma > state.trend_ewma
             if mid_move_bps > 0 and not is_uptrend:
                 return  # bullish burst but 1-min EWMA is below 5-min — downtrend — skip
@@ -388,7 +381,8 @@ class AdvancedMomentumStrategy:
         # ── Multi-Symbol Correlation Check ─────────────────────────────
         if symbol != self.primary_symbol:
             primary_state = self._get_state(self.primary_symbol)
-            if primary_state.trend_ewma > 0.0 and now_ms - primary_state.trend_ewma_start_ms >= self.trend_warmup_ms:
+            p_primary = self.sym_params.get(self.primary_symbol, p)
+            if primary_state.trend_ewma > 0.0 and now_ms - primary_state.trend_ewma_start_ms >= p_primary["trend_warmup_ms"]:
                 primary_is_uptrend = primary_state.short_trend_ewma > primary_state.trend_ewma
                 if mid_move_bps > 0 and not primary_is_uptrend:
                     return # Primary is bearish, ignore long altcoin burst
@@ -396,11 +390,11 @@ class AdvancedMomentumStrategy:
                     return # Primary is bullish, ignore short altcoin burst
         # ───────────────────────────────────────────────────────────────
 
-        if mid_move_bps > 0 and afi >= self.afi_threshold and obi >= self.obi_threshold and not self.short_only:
+        if mid_move_bps > 0 and afi >= p["afi_threshold"] and obi >= p["obi_threshold"] and not p["short_only"]:
             side = "BUY"
             # Using maker fill model for execution upgrade: Post-Only limit order at best_bid
             fill = self.fill_model.fill_entry_long(book.bid_price, book.mid_price)
-        elif mid_move_bps < 0 and afi <= -self.afi_threshold and obi <= -self.obi_threshold:
+        elif mid_move_bps < 0 and afi <= -p["afi_threshold"] and obi <= -p["obi_threshold"]:
             side = "SELL"
             # Using maker fill model for execution upgrade: Post-Only limit order at best_ask
             fill = self.fill_model.fill_entry_short(book.ask_price, book.mid_price)
@@ -427,19 +421,22 @@ class AdvancedMomentumStrategy:
         if pos is None:
             return
 
+        p = self.sym_params.get(symbol)
+        if not p: return
+        
         hold_ms = now_ms - pos.entry_time_ms
         exit_reason: str | None = None
         exit_fill = None
 
         # Adaptive Thresholds
-        if self.adaptive_vol_multiplier > 0 and state.sigma_slow > 0:
+        if p["adaptive_vol_multiplier"] > 0 and state.sigma_slow > 0:
             # Scale TP/SL based on current volatility regime
-            vol_adjustment = Decimal(str(max(0.5, min(3.0, state.sigma_slow * self.adaptive_vol_multiplier))))
-            dynamic_tp = self.take_profit_bps * vol_adjustment
-            dynamic_sl = self.stop_loss_bps * vol_adjustment
+            vol_adjustment = Decimal(str(max(0.5, min(3.0, state.sigma_slow * p["adaptive_vol_multiplier"]))))
+            dynamic_tp = Decimal(str(p["take_profit_bps"])) * vol_adjustment
+            dynamic_sl = Decimal(str(p["stop_loss_bps"])) * vol_adjustment
         else:
-            dynamic_tp = self.take_profit_bps
-            dynamic_sl = self.stop_loss_bps
+            dynamic_tp = Decimal(str(p["take_profit_bps"]))
+            dynamic_sl = Decimal(str(p["stop_loss_bps"]))
 
         if pos.side == "BUY":
             pnl_bps = (book.bid_price - pos.entry_price) / pos.entry_mid * 10000
@@ -448,15 +445,15 @@ class AdvancedMomentumStrategy:
             if pnl_f > pos.high_watermark_bps:
                 pos.high_watermark_bps = pnl_f
             # Trailing stop: once peak >= trigger, stop trails trail_bps below the peak
-            if pos.high_watermark_bps >= self.trail_trigger_bps:
-                is_stopped = pnl_f <= pos.high_watermark_bps - self.trail_bps
+            if pos.high_watermark_bps >= p["trail_trigger_bps"]:
+                is_stopped = pnl_f <= pos.high_watermark_bps - p["trail_bps"]
             else:
                 is_stopped = pnl_bps <= -dynamic_sl
             if pnl_bps >= dynamic_tp:
                 exit_reason = "take_profit"
             elif is_stopped:
                 exit_reason = "stop_loss"
-            elif hold_ms >= self.max_hold_ms:
+            elif hold_ms >= p["max_hold_ms"]:
                 exit_reason = "timeout"
             if exit_reason:
                 # Maker exit assumption for advanced algo: we join the bid to close (or ask to close short)
@@ -468,15 +465,15 @@ class AdvancedMomentumStrategy:
             pnl_f = float(pnl_bps)
             if pnl_f > pos.high_watermark_bps:
                 pos.high_watermark_bps = pnl_f
-            if pos.high_watermark_bps >= self.trail_trigger_bps:
-                is_stopped = pnl_f <= pos.high_watermark_bps - self.trail_bps
+            if pos.high_watermark_bps >= p["trail_trigger_bps"]:
+                is_stopped = pnl_f <= pos.high_watermark_bps - p["trail_bps"]
             else:
                 is_stopped = pnl_bps <= -dynamic_sl
             if pnl_bps >= dynamic_tp:
                 exit_reason = "take_profit"
             elif is_stopped:
                 exit_reason = "stop_loss"
-            elif hold_ms >= self.max_hold_ms:
+            elif hold_ms >= p["max_hold_ms"]:
                 exit_reason = "timeout"
             if exit_reason:
                 exit_fill = self.fill_model.fill_exit_short(book.bid_price, book.mid_price)
