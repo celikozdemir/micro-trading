@@ -83,15 +83,16 @@ class PaperTrader:
 
         # Live state shared with FastAPI via JSON file
         s = self._strategy
+        p = s.sym_params.get(primary_symbol, {}) if hasattr(s, "sym_params") else {}
         self._live_state: dict = {
             "ts_ms": None,
             "symbols": {},
             "positions": {},
             "config": {
-                "take_profit_bps":  float(s.take_profit_bps),
-                "stop_loss_bps":    float(s.stop_loss_bps),
-                "trail_trigger_bps": s.trail_trigger_bps,
-                "trail_bps":        s.trail_bps,
+                "take_profit_bps":  float(p.get("take_profit_bps", 0)),
+                "stop_loss_bps":    float(p.get("stop_loss_bps", 0)),
+                "trail_trigger_bps": float(p.get("trail_trigger_bps", 0)),
+                "trail_bps":        float(p.get("trail_bps", 0)),
             },
         }
         self._state_file: str = os.environ.get("LIVE_STATE_FILE", "/tmp/algo_live_state.json")
@@ -254,14 +255,15 @@ class PaperTrader:
         )
 
         s = cfg["strategy"]
+        ex = s.get("exit", {})
         log.info(
             "Paper Trader starting",
             venue=cfg["venue"],
             symbols=cfg["symbols"],
-            move_bps_trigger=s["move_bps_trigger"],
+            move_bps_trigger=s.get("move_bps_trigger", 0),
             intensity_filter_trades=s.get("intensity_filter_trades", 0),
-            take_profit_bps=s["exit"]["take_profit_bps"],
-            stop_loss_bps=s["exit"]["stop_loss_bps"],
+            take_profit_bps=ex.get("take_profit_bps", 0),
+            stop_loss_bps=ex.get("stop_loss_bps", 0),
         )
 
         await asyncio.gather(

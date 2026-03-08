@@ -135,6 +135,7 @@ class AdvancedMomentumStrategy:
         # ── Parameter resolution (supports per-symbol overrides) ────────
         self.sym_params: dict[str, dict] = {}
         overrides = s.get("symbol_overrides", {})
+        ex = s.get("exit", {})
         
         for sym in symbols:
             sym_s = {**s, **overrides.get(sym, {})}  # Override base with symbol-specific
