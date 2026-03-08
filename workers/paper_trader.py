@@ -11,6 +11,7 @@ This process maintains its own WS connection and only writes to paper_trades.
 Usage:
     python -m workers.paper_trader          # taker fill model (default, conservative)
     python -m workers.paper_trader --maker  # maker fill model (optimistic)
+    python -m workers.paper_trader --maker --primary BTCUSDT  # maker fill with BTC-correlated filter
 
 Systemd: see deploy/algo-paper.service
 """
@@ -32,9 +33,9 @@ from backend.config import load_trading_config
 from backend.core.backtester.fill_model import FillModel
 from backend.core.data.feeds.binance_ws import BinanceWebSocketFeed
 from backend.core.data.normalizer import AggTrade, BookTick
-from backend.core.strategy.microstructure.burst_momentum import (
+from backend.core.strategy.microstructure.advanced_momentum import (
     BacktestTrade,
-    BurstMomentumStrategy,
+    AdvancedMomentumStrategy,
 )
 from backend.db.session import AsyncSessionLocal, Base, engine
 from backend.models.paper_trade import PaperTrade
@@ -63,13 +64,13 @@ class PaperTrader:
     Cold path → _flush_loop() — persists buffered trades to DB every second.
     """
 
-    def __init__(self, config: dict, fill_model: FillModel):
+    def __init__(self, config: dict, fill_model: FillModel, primary_symbol: str = "BTCUSDT"):
         self.config = config
         telemetry = config.get("telemetry", {})
         self._flush_interval_s: float = telemetry.get("flush_interval_s", 1.0)
         self._pnl_log_interval_s: float = telemetry.get("latency_log_interval_s", 60.0)
 
-        self._strategy = BurstMomentumStrategy(config, fill_model)
+        self._strategy = AdvancedMomentumStrategy(config, fill_model, primary_symbol=primary_symbol)
         self._last_trade_count: int = 0
         self._trade_buffer: list[BacktestTrade] = []
         self._running = False
@@ -310,7 +311,7 @@ async def init_db() -> None:
 # ------------------------------------------------------------------ #
 
 
-async def main(maker: bool = False) -> None:
+async def main(maker: bool = False, primary_symbol: str = "BTCUSDT") -> None:
     config_path = os.environ.get("TRADING_CONFIG", "configs/default.yaml")
     config = load_trading_config(config_path)
 
@@ -322,7 +323,7 @@ async def main(maker: bool = False) -> None:
         fill_model = FillModel()
         log.info("Fill model: TAKER (fee=4 bps/side, slippage=1.5 bps)")
 
-    trader = PaperTrader(config, fill_model)
+    trader = PaperTrader(config, fill_model, primary_symbol=primary_symbol)
 
     loop = asyncio.get_event_loop()
 
@@ -341,5 +342,6 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Paper trader — live strategy on Binance WS")
     parser.add_argument("--maker", action="store_true", help="Use maker fill model instead of taker")
+    parser.add_argument("--primary", default="BTCUSDT", help="Primary symbol for correlation filter")
     args = parser.parse_args()
-    uvloop.run(main(maker=args.maker))
+    uvloop.run(main(maker=args.maker, primary_symbol=args.primary))
