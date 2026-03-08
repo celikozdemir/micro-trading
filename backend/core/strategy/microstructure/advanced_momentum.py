@@ -180,6 +180,9 @@ class AdvancedMomentumStrategy:
         # (bid_qty - ask_qty) / (bid_qty + ask_qty)
         self.obi_threshold: float = float(s.get("obi_threshold", 0.2))
         
+        # Directional Constraint
+        self.short_only: bool = bool(s.get("short_only", True))
+        
         # Adaptive Thresholds: dynamically scale TP/SL based on sigma_slow
         self.adaptive_vol_multiplier: float = float(s.get("adaptive_vol_multiplier", 0.0))
         # ───────────────────────────────────────────────────────────────
@@ -393,7 +396,7 @@ class AdvancedMomentumStrategy:
                     return # Primary is bullish, ignore short altcoin burst
         # ───────────────────────────────────────────────────────────────
 
-        if mid_move_bps > 0 and afi >= self.afi_threshold and obi >= self.obi_threshold:
+        if mid_move_bps > 0 and afi >= self.afi_threshold and obi >= self.obi_threshold and not self.short_only:
             side = "BUY"
             # Using maker fill model for execution upgrade: Post-Only limit order at best_bid
             fill = self.fill_model.fill_entry_long(book.bid_price, book.mid_price)

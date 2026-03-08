@@ -38,7 +38,13 @@ strategy:
   trend_halflife_ms: 20000         # 20s slow micro-EMA (regime reference)
   short_trend_halflife_ms: 2000    # 2s fast micro-EMA (burst-speed momentum)
   trend_warmup_ms: 60000           # 60s warmup is enough for 20s EWMA to stabilize
+  
+  # ── Advanced Momentum Parameters ──────────────────────────────────
+  obi_threshold: 0.2
+  short_only: true
+  adaptive_vol_multiplier: 0.0
   # ──────────────────────────────────────────────────────────────────
+  
   entry_qty:
     BTCUSDT: 0.001
     ETHUSDT: 0.01
