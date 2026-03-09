@@ -82,7 +82,7 @@ risk:
   max_spread_bps: 6
   max_ws_lag_ms: 300
   reconnect_storm:
-    max_reconnects: 5
+    max_reconnects: 10
     window_min: 10
 telemetry:
   flush_interval_s: 1

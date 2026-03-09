@@ -47,11 +47,13 @@ def _build_url(venue: str, symbols: list[str], streams: list[str]) -> str:
 
 class ReconnectStormGuard:
     """
-    Circuit breaker that triggers if too many reconnects happen
-    within a sliding time window.
+    Circuit breaker that triggers a cooldown if too many reconnects
+    happen within a sliding time window. Recovers after cooldown.
     """
 
-    def __init__(self, max_reconnects: int = 5, window_minutes: int = 10):
+    COOLDOWN_S = 120  # 2-minute cooldown after storm detected
+
+    def __init__(self, max_reconnects: int = 8, window_minutes: int = 10):
         self.max_reconnects = max_reconnects
         self.window_s = window_minutes * 60
         self._history: deque[float] = deque()
@@ -60,10 +62,13 @@ class ReconnectStormGuard:
         """Record a reconnect attempt. Returns True if storm detected."""
         now = time.time()
         self._history.append(now)
-        # Prune events outside the sliding window
         while self._history and self._history[0] < now - self.window_s:
             self._history.popleft()
         return len(self._history) >= self.max_reconnects
+
+    def reset(self) -> None:
+        """Clear history after cooldown, allowing fresh reconnect attempts."""
+        self._history.clear()
 
 
 class BinanceWebSocketFeed:
@@ -101,12 +106,14 @@ class BinanceWebSocketFeed:
                 async with websockets.connect(
                     self.url,
                     ssl=_SSL_CONTEXT,
-                    ping_interval=20,
-                    ping_timeout=10,
+                    ping_interval=30,
+                    ping_timeout=20,
                     max_size=2**20,
+                    close_timeout=5,
                 ) as ws:
                     self._ws = ws
-                    backoff = 1.0  # reset on successful connect
+                    backoff = 1.0
+                    self._storm_guard.reset()
                     logger.info("Binance WS connected")
                     try:
                         async for raw in ws:
@@ -125,11 +132,15 @@ class BinanceWebSocketFeed:
                 break
 
             if self._storm_guard.record():
-                logger.critical(
-                    "Reconnect storm detected — halting feed. Manual restart required."
+                cooldown = ReconnectStormGuard.COOLDOWN_S
+                logger.warning(
+                    "Reconnect storm detected — cooling down for %ds before retry",
+                    cooldown,
                 )
-                self._running = False
-                break
+                await asyncio.sleep(cooldown)
+                self._storm_guard.reset()
+                backoff = 1.0
+                continue
 
             logger.info("Reconnecting in %.1fs...", backoff)
             await asyncio.sleep(backoff)

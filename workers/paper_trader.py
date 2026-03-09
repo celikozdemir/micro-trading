@@ -216,13 +216,20 @@ class PaperTrader:
 
     async def _state_write_loop(self) -> None:
         """Write live market state to a shared JSON file every 200ms."""
+        loop = asyncio.get_running_loop()
         while self._running:
             await asyncio.sleep(0.2)
             try:
-                with open(self._state_file, "w") as f:
-                    json.dump(self._live_state, f)
+                blob = json.dumps(self._live_state)
+                await loop.run_in_executor(None, self._write_state_file, blob)
             except Exception:
-                pass  # Non-critical; dashboard will show stale or no data
+                pass
+
+    def _write_state_file(self, blob: str) -> None:
+        tmp = self._state_file + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(blob)
+        os.replace(tmp, self._state_file)
 
     # ------------------------------------------------------------------ #
     # P&L reporting                                                        #
@@ -275,12 +282,21 @@ class PaperTrader:
             stop_loss_bps=ex.get("stop_loss_bps", 0),
         )
 
-        await asyncio.gather(
-            feed.run(),
-            self._flush_loop(),
-            self._pnl_log_loop(),
-            self._state_write_loop(),
-        )
+        tasks = [
+            asyncio.create_task(feed.run(), name="ws-feed"),
+            asyncio.create_task(self._flush_loop(), name="flush"),
+            asyncio.create_task(self._pnl_log_loop(), name="pnl-log"),
+            asyncio.create_task(self._state_write_loop(), name="state-write"),
+        ]
+        # If the feed task exits (for any reason), tear everything down
+        # so systemd Restart=always can bring us back cleanly.
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in done:
+            if t.get_name() == "ws-feed":
+                log.warning("WS feed task exited — shutting down for systemd restart")
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     async def stop(self) -> None:
         log.info("Shutting down paper trader...")
