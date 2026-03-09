@@ -3,14 +3,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   getServices, controlService,
-  getPaperStats, getPaperTrades, getStats, getLiveState,
+  getPaperStats, getPaperTrades, getStats,
   type ServiceStatus, type PaperTradeStats, type PaperTradeRow, type SymbolStats, type LiveState,
 } from '@/lib/api'
+import { useLiveWs } from '@/lib/use-live-ws'
 import ServiceCard from '@/components/service-card'
 import PnlSummary from '@/components/pnl-summary'
 import TradesTable, { type LivePositionEntry } from '@/components/trades-table'
 import DataStats from '@/components/data-stats'
 import LiveMarketCard from '@/components/live-market-card'
+import EquityCurve from '@/components/equity-curve'
+import { TradeBreakdownCard, HourlyPerformanceCard } from '@/components/trade-analytics'
 
 const EMPTY_STATS: PaperTradeStats = { total_trades: 0, wins: 0, win_rate: 0, net_pnl_usd: 0 }
 
@@ -38,7 +41,8 @@ export default function Dashboard() {
   const [pnlToday, setPnlToday]         = useState<PaperTradeStats>(EMPTY_STATS)
   const [recentTrades, setRecentTrades] = useState<PaperTradeRow[]>([])
   const [dbStats, setDbStats]           = useState<Record<string, SymbolStats>>({})
-  const [liveState, setLiveState]       = useState<LiveState | null>(null)
+
+  const { state: liveState } = useLiveWs()
 
   const refreshServices = useCallback(async () => {
     try { setServices(await getServices()) } catch { /* keep previous */ }
@@ -59,18 +63,13 @@ export default function Dashboard() {
     try { setDbStats(await getStats()) } catch { /* ignore */ }
   }, [])
 
-  const refreshLive = useCallback(async () => {
-    try { setLiveState(await getLiveState()) } catch { /* keep previous */ }
-  }, [])
-
   useEffect(() => {
-    refreshServices(); refreshPnl(); refreshTrades(); refreshDbStats(); refreshLive()
+    refreshServices(); refreshPnl(); refreshTrades(); refreshDbStats()
     const t1 = setInterval(refreshServices, 5_000)
     const t2 = setInterval(() => { refreshPnl(); refreshTrades() }, 10_000)
     const t3 = setInterval(refreshDbStats, 15_000)
-    const t4 = setInterval(refreshLive, 500)
-    return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); clearInterval(t4) }
-  }, [refreshServices, refreshPnl, refreshTrades, refreshDbStats, refreshLive])
+    return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3) }
+  }, [refreshServices, refreshPnl, refreshTrades, refreshDbStats])
 
   const handleAction = async (name: string, action: 'start' | 'stop' | 'restart') => {
     setLoadingFor(name)
@@ -126,6 +125,17 @@ export default function Dashboard() {
           <PnlSummary label="Today" stats={pnlToday} />
           <PnlSummary label="All Time" stats={pnlAll} />
         </div>
+      </section>
+
+      {/* Equity Curve */}
+      <section>
+        <EquityCurve days={7} />
+      </section>
+
+      {/* Analytics */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <TradeBreakdownCard days={7} />
+        <HourlyPerformanceCard days={7} />
       </section>
 
       {/* Recent Trades + DB Stats */}

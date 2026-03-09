@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.config import load_trading_config
 from backend.core.backtester.fill_model import FillModel
 from backend.core.backtester.tick_replayer import TickReplayer
-from backend.core.strategy.microstructure.burst_momentum import BacktestTrade, BurstMomentumStrategy
+from backend.core.strategy.microstructure.advanced_momentum import BacktestTrade, AdvancedMomentumStrategy
 from backend.db.session import get_session
 
 router = APIRouter()
@@ -86,7 +86,7 @@ def _build_result(trades: list[BacktestTrade], config: dict, tick_count: int, ca
 
 def _run_strategy(ticks: list, config: dict) -> list[BacktestTrade]:
     """CPU-bound — runs in a thread so it doesn't block the event loop."""
-    strategy = BurstMomentumStrategy(config, FillModel())
+    strategy = AdvancedMomentumStrategy(config, FillModel())
     for event in ticks:
         strategy.on_event(event)
     return strategy.trades

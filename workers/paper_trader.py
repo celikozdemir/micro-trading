@@ -32,7 +32,7 @@ from sqlalchemy import text
 from backend.config import load_trading_config
 from backend.core.backtester.fill_model import FillModel
 from backend.core.data.feeds.binance_ws import BinanceWebSocketFeed
-from backend.core.data.normalizer import AggTrade, BookTick
+from backend.core.data.normalizer import AggTrade, BookTick, MarkPrice
 from backend.core.strategy.microstructure.advanced_momentum import (
     BacktestTrade,
     AdvancedMomentumStrategy,
@@ -101,9 +101,18 @@ class PaperTrader:
     # Hot path                                                             #
     # ------------------------------------------------------------------ #
 
-    def on_event(self, event: BookTick | AggTrade) -> None:
+    def on_event(self, event: BookTick | AggTrade | MarkPrice) -> None:
         """Feed tick to strategy. Zero I/O."""
         self._strategy.on_event(event)
+
+        # Track funding rate in live state
+        if isinstance(event, MarkPrice):
+            self._live_state.setdefault("funding", {})[event.symbol] = {
+                "rate": float(event.funding_rate),
+                "next_time_ms": event.next_funding_time_ms,
+                "mark_price": float(event.mark_price),
+            }
+            return
 
         # Update in-memory live state (no I/O — written by _state_write_loop)
         if isinstance(event, BookTick):

@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import {
-  getPaperTrades, getPaperStats, clearPaperTrades, getLiveState,
+  getPaperTrades, getPaperStats, clearPaperTrades,
   type PaperTradeRow, type PaperTradeStats, type LiveState,
 } from '@/lib/api'
+import { useLiveWs } from '@/lib/use-live-ws'
 import PnlSummary from '@/components/pnl-summary'
 import TradesTable, { type LivePositionEntry } from '@/components/trades-table'
 
@@ -31,7 +32,8 @@ export default function TradesPage() {
   })
   const [confirming, setConfirming] = useState(false)
   const [clearing, setClearing]     = useState(false)
-  const [liveState, setLiveState]   = useState<LiveState | null>(null)
+
+  const { state: liveState } = useLiveWs()
 
   const load = useCallback(async () => {
     try {
@@ -45,17 +47,11 @@ export default function TradesPage() {
     } catch { /* ignore */ }
   }, [symbol, page])
 
-  const refreshLive = useCallback(async () => {
-    try { setLiveState(await getLiveState()) } catch { /* keep previous */ }
-  }, [])
-
   useEffect(() => {
     load()
-    refreshLive()
     const t1 = setInterval(load, 10_000)
-    const t2 = setInterval(refreshLive, 500)
-    return () => { clearInterval(t1); clearInterval(t2) }
-  }, [load, refreshLive])
+    return () => { clearInterval(t1) }
+  }, [load])
 
   const handleClear = async () => {
     if (!confirming) { setConfirming(true); return }

@@ -43,7 +43,68 @@ export const controlService = (name: string, action: 'start' | 'stop' | 'restart
 // Live market state
 export const getLiveState = () => req<LiveState>('GET', '/live')
 
+// Analytics
+export const getEquityCurve = (symbol?: string, days = 7) => {
+  const params = new URLSearchParams({ days: String(days) })
+  if (symbol) params.set('symbol', symbol)
+  return req<EquityCurveResponse>('GET', `/analytics/equity-curve?${params}`)
+}
+export const getTradeBreakdown = (symbol?: string, days = 7) => {
+  const params = new URLSearchParams({ days: String(days) })
+  if (symbol) params.set('symbol', symbol)
+  return req<TradeBreakdownResponse>('GET', `/analytics/breakdown?${params}`)
+}
+export const getHourlyPerformance = (symbol?: string, days = 7) => {
+  const params = new URLSearchParams({ days: String(days) })
+  if (symbol) params.set('symbol', symbol)
+  return req<HourlyBucket[]>('GET', `/analytics/hourly?${params}`)
+}
+
 // Types
+export interface EquityCurvePoint {
+  ts: number
+  pnl: number
+  trade_pnl: number
+  bps: number
+  symbol: string
+  side: string
+  exit_reason: string
+  drawdown: number
+}
+
+export interface EquityCurveResponse {
+  points: EquityCurvePoint[]
+  summary: {
+    total_trades: number
+    net_pnl_usd: number
+    max_drawdown_usd: number
+    peak_pnl_usd: number
+  }
+}
+
+export interface BreakdownEntry {
+  label: string
+  count: number
+  net_pnl: number
+  avg_bps: number
+  wins: number
+  win_rate: number
+}
+
+export interface TradeBreakdownResponse {
+  by_exit_reason: BreakdownEntry[]
+  by_side: BreakdownEntry[]
+  by_symbol: BreakdownEntry[]
+}
+
+export interface HourlyBucket {
+  hour: number
+  count: number
+  net_pnl: number
+  avg_bps: number
+  win_rate: number
+}
+
 export interface RunnerStatus {
   running: boolean
   uptime_s: number
@@ -173,9 +234,16 @@ export interface LiveConfig {
   trail_bps: number
 }
 
+export interface FundingInfo {
+  rate: number
+  next_time_ms: number
+  mark_price: number
+}
+
 export interface LiveState {
   ts_ms: number | null
   symbols: Record<string, LiveSymbol>
   positions: Record<string, LivePosition | null>
   config?: LiveConfig
+  funding?: Record<string, FundingInfo>
 }

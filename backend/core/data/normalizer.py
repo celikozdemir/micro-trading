@@ -65,10 +65,26 @@ class AggTrade:
         return self.timestamp_local_ms - self.timestamp_exchange_ms
 
 
-class Normalizer:
-    """Converts raw Binance WS payloads into typed BookTick / AggTrade structs."""
+@dataclass(slots=True)
+class MarkPrice:
+    """Binance markPrice update — includes funding rate."""
+    symbol: str
+    timestamp_exchange_ms: int
+    timestamp_local_ms: int
+    mark_price: Decimal
+    index_price: Decimal
+    funding_rate: Decimal
+    next_funding_time_ms: int
 
-    def normalize(self, stream: str, data: dict) -> BookTick | AggTrade | None:
+    @property
+    def lag_ms(self) -> int:
+        return self.timestamp_local_ms - self.timestamp_exchange_ms
+
+
+class Normalizer:
+    """Converts raw Binance WS payloads into typed BookTick / AggTrade / MarkPrice structs."""
+
+    def normalize(self, stream: str, data: dict) -> BookTick | AggTrade | MarkPrice | None:
         local_ms = _epoch_ms()
 
         # bookTicker: identified by having b/a/B/A keys
@@ -80,7 +96,9 @@ class Normalizer:
         if event_type == "aggTrade":
             return self._agg_trade(data, local_ms)
 
-        # markPrice — not stored but can be added later
+        if event_type == "markPriceUpdate":
+            return self._mark_price(data, local_ms)
+
         return None
 
     def _book_ticker(self, d: dict, local_ms: int) -> BookTick:
@@ -106,4 +124,15 @@ class Normalizer:
             price=Decimal(d["p"]),
             qty=Decimal(d["q"]),
             is_buyer_maker=d["m"],
+        )
+
+    def _mark_price(self, d: dict, local_ms: int) -> MarkPrice:
+        return MarkPrice(
+            symbol=d["s"],
+            timestamp_exchange_ms=d["E"],
+            timestamp_local_ms=local_ms,
+            mark_price=Decimal(d.get("p", "0")),
+            index_price=Decimal(d.get("i", "0")),
+            funding_rate=Decimal(d.get("r", "0")),
+            next_funding_time_ms=d.get("T", 0),
         )

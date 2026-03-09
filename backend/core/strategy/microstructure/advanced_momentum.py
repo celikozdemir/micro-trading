@@ -33,7 +33,7 @@ from decimal import Decimal
 from typing import Optional
 
 from backend.core.backtester.fill_model import FillModel
-from backend.core.data.normalizer import AggTrade, BookTick
+from backend.core.data.normalizer import AggTrade, BookTick, MarkPrice
 
 
 # ------------------------------------------------------------------ #
@@ -88,6 +88,11 @@ class SymbolState:
     # ── Volatility Regime Detection ──────────────────────────────────
     vol_history: deque = field(default_factory=deque)  # (ts_ms, abs_return)
     realized_vol_5m: float = 0.0   # rolling 5-min realized volatility (bps)
+    # ─────────────────────────────────────────────────────────────────
+
+    # ── Funding Rate ─────────────────────────────────────────────────
+    funding_rate: float = 0.0         # latest funding rate from markPrice
+    next_funding_time_ms: int = 0     # next funding settlement time
     # ─────────────────────────────────────────────────────────────────
 
     # Most recent book tick (needed for exit checks triggered by agg_trades)
@@ -176,6 +181,7 @@ class AdvancedMomentumStrategy:
                 
                 "macro_trend_halflife_ms": float(sym_s.get("macro_trend_halflife_ms", 900_000)),
                 "macro_trend_warmup_ms": int(sym_s.get("macro_trend_warmup_ms", 600_000)),
+                "funding_rate_filter": bool(sym_s.get("funding_rate_filter", True)),
             }
         
         self.cooldown_ms: int = s.get("cooldown_ms", 2000)
@@ -198,15 +204,22 @@ class AdvancedMomentumStrategy:
     # Public interface                                                   #
     # ---------------------------------------------------------------- #
 
-    def on_event(self, event: BookTick | AggTrade) -> None:
+    def on_event(self, event: BookTick | AggTrade | MarkPrice) -> None:
         if isinstance(event, BookTick):
             self._on_book_tick(event)
         elif isinstance(event, AggTrade):
             self._on_agg_trade(event)
+        elif isinstance(event, MarkPrice):
+            self._on_mark_price(event)
 
     # ---------------------------------------------------------------- #
     # Event handlers                                                     #
     # ---------------------------------------------------------------- #
+
+    def _on_mark_price(self, mp: MarkPrice) -> None:
+        state = self._get_state(mp.symbol)
+        state.funding_rate = float(mp.funding_rate)
+        state.next_funding_time_ms = mp.next_funding_time_ms
 
     def _on_book_tick(self, bt: BookTick) -> None:
         state = self._get_state(bt.symbol)
@@ -448,15 +461,26 @@ class AdvancedMomentumStrategy:
                     return # Primary is bullish, ignore short altcoin burst
         # ───────────────────────────────────────────────────────────────
 
+        # ── Funding Rate Filter ──────────────────────────────────────────
+        # When enabled, prefer the side that collects funding:
+        #   funding > 0 → longs pay shorts → favor SHORT
+        #   funding < 0 → shorts pay longs → favor LONG
+        # Don't block trades entirely — only filter when funding is meaningfully skewed.
+        funding = state.funding_rate
+        if p["funding_rate_filter"] and abs(funding) > 0.0001:
+            if mid_move_bps > 0 and funding > 0.0003:
+                return  # Strong positive funding — don't go long (paying high rate)
+            if mid_move_bps < 0 and funding < -0.0003:
+                return  # Strong negative funding — don't go short (paying high rate)
+        # ───────────────────────────────────────────────────────────────
+
         if mid_move_bps > 0 and afi >= p["afi_threshold"] and obi >= p["obi_threshold"]:
             if p["short_only"]:
                 return  # Skip longs if short_only mode
             side = "BUY"
-            # Lift the ASK to enter LONG (Taker model)
             fill = self.fill_model.fill_entry_long(book.ask_price, book.mid_price)
         elif mid_move_bps < 0 and afi <= -p["afi_threshold"] and obi <= -p["obi_threshold"]:
             side = "SELL"
-            # Hit the BID to enter SHORT (Taker model)
             fill = self.fill_model.fill_entry_short(book.bid_price, book.mid_price)
         else:
             return

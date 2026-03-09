@@ -22,7 +22,7 @@ from websockets.exceptions import ConnectionClosed
 
 _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
-from backend.core.data.normalizer import AggTrade, BookTick, Normalizer
+from backend.core.data.normalizer import AggTrade, BookTick, MarkPrice, Normalizer
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class BinanceWebSocketFeed:
         venue: str,
         symbols: list[str],
         streams: list[str],
-        on_event: Callable[[BookTick | AggTrade], None],
+        on_event: Callable[[BookTick | AggTrade | MarkPrice], None],
         max_reconnects: int = 5,
         reconnect_window_min: int = 10,
     ):

@@ -37,6 +37,7 @@ strategy:
   obi_threshold: 0.15
   short_only: false              # ← BIDIRECTIONAL: trade both longs and shorts
   adaptive_vol_multiplier: 0.0
+  funding_rate_filter: true      # Skip longs when funding > 0.03%, shorts when < -0.03%
   # ──────────────────────────────────────────────────────────────────
   
   # ── Per-Symbol Overrides ──────────────────────────────────────────

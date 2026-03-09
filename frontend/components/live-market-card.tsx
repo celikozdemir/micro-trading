@@ -1,7 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { getLiveState, type LiveState, type LivePosition, type LiveSymbol } from '@/lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { type LiveState, type LivePosition, type LiveSymbol, type FundingInfo } from '@/lib/api'
+import { useLiveWs } from '@/lib/use-live-ws'
 
 function fmtPrice(p: number, symbol: string): string {
   return symbol.startsWith('BTC')
@@ -110,27 +111,31 @@ function PositionBadge({ symbol, pos, mid }: { symbol: string; pos: LivePosition
   )
 }
 
+function FundingBadge({ symbol, info }: { symbol: string; info: FundingInfo }) {
+  const pct = (info.rate * 100).toFixed(4)
+  const color = info.rate > 0 ? 'text-emerald-400/80' : info.rate < 0 ? 'text-red-400/80' : 'text-muted-foreground'
+  const nextIn = Math.max(0, info.next_time_ms - Date.now())
+  const hours = Math.floor(nextIn / 3600000)
+  const mins = Math.floor((nextIn % 3600000) / 60000)
+
+  return (
+    <div className="mt-1 flex items-center gap-2 text-xs font-mono">
+      <span className="text-muted-foreground/60">FR</span>
+      <span className={color}>{info.rate >= 0 ? '+' : ''}{pct}%</span>
+      <span className="text-muted-foreground/40">next {hours}h{mins}m</span>
+    </div>
+  )
+}
+
 export default function LiveMarketCard() {
-  const [state, setState] = useState<LiveState | null>(null)
+  const { state, connected } = useLiveWs()
   const [lastUpdate, setLastUpdate] = useState<number | null>(null)
 
-  const refresh = useCallback(async () => {
-    try {
-      const s = await getLiveState()
-      setState(s)
-      if (s.ts_ms) setLastUpdate(Date.now())
-    } catch {
-      // keep previous state
-    }
-  }, [])
-
   useEffect(() => {
-    refresh()
-    const t = setInterval(refresh, 500)
-    return () => clearInterval(t)
-  }, [refresh])
+    if (state?.ts_ms) setLastUpdate(Date.now())
+  }, [state?.ts_ms])
 
-  const isLive = lastUpdate !== null && Date.now() - lastUpdate < 3000
+  const isLive = connected && lastUpdate !== null && Date.now() - lastUpdate < 3000
   const symbols = state ? Object.keys(state.symbols) : []
   const hasData = symbols.length > 0
 
@@ -162,7 +167,12 @@ export default function LiveMarketCard() {
           {/* Prices row */}
           <div className="grid grid-cols-2 gap-4">
             {symbols.map(sym => (
-              <PriceCell key={sym} symbol={sym} data={state!.symbols[sym]} />
+              <div key={sym}>
+                <PriceCell symbol={sym} data={state!.symbols[sym]} />
+                {state!.funding?.[sym] && (
+                  <FundingBadge symbol={sym} info={state!.funding[sym]} />
+                )}
+              </div>
             ))}
           </div>
 

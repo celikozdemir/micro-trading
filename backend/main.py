@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.api.routes import health
 from backend.api.routes import runner, config_routes, stats, backtest_routes
 from backend.api.routes import paper_trades_routes, services_routes, live_routes
+from backend.api.routes import analytics_routes, ws_routes
 from backend.services.runner_manager import RunnerManager
 
 
@@ -40,6 +41,8 @@ app.include_router(backtest_routes.router, prefix="/api", tags=["backtest"])
 app.include_router(paper_trades_routes.router, prefix="/api", tags=["paper-trades"])
 app.include_router(services_routes.router, prefix="/api", tags=["services"])
 app.include_router(live_routes.router, prefix="/api", tags=["live"])
+app.include_router(analytics_routes.router, prefix="/api", tags=["analytics"])
+app.include_router(ws_routes.router, prefix="/api", tags=["websocket"])
 
 
 @app.get("/")
