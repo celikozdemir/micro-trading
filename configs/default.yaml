@@ -14,10 +14,7 @@ strategy:
   move_bps_trigger: 0.5      # almost no price-move required — let flow gates drive timing
 
   # ── Three-gate signal filters (all must fire simultaneously) ──────
-  # Gate 1: Relative intensity spike
-  # Current 1s notional must exceed this multiple of the 60s-avg-per-sec.
-  # 8× = only enter when trading volume is 8 times above normal pace.
-  intensity_spike_mult: 4.0
+  intensity_spike_mult: 4.0     # Global floor (BTC/ETH have specific overrides below)
 
   # Gate 2: Volatility expansion (EWMA ratio)
   # sigma_fast (500ms half-life) must exceed vol_expansion_ratio × sigma_slow (45s half-life).
@@ -29,7 +26,7 @@ strategy:
   # Gate 3: Notional Aggressive Flow Imbalance
   # (buy_notional - sell_notional) / total must exceed afi_threshold in direction of move.
   # 0.5 = buy side must account for ≥75% of notional flow (or ≤25% for shorts).
-  afi_threshold: 0.35
+  afi_threshold: 0.45
 
   # Gate 4: Micro-regime crossover filter (matched to burst timescale)
   # fast EMA (2s) > slow EMA (20s) → micro-uptrend → LONG only; reverse → SHORT only.
@@ -40,7 +37,7 @@ strategy:
   trend_warmup_ms: 30000           # 30s warmup is enough for 20s EWMA to stabilize
   
   # ── Advanced Momentum Parameters ──────────────────────────────────
-  obi_threshold: 0.10
+  obi_threshold: 0.15
   short_only: true
   adaptive_vol_multiplier: 0.0
   # ──────────────────────────────────────────────────────────────────
@@ -49,13 +46,13 @@ strategy:
   # BTC has thicker books and lower volatility; ETH is thinner and wilder.
   symbol_overrides:
     BTCUSDT:
-      obi_threshold: 0.12           # Still requires clear imbalance on thick BTC books
-      intensity_spike_mult: 3.0     # 3× average volume spike threshold
-      move_bps_trigger: 0.3         # Small physical move required
+      obi_threshold: 0.18           # Still requires clear imbalance on thick BTC books
+      intensity_spike_mult: 4.0     # 4× average volume spike threshold
+      move_bps_trigger: 0.5         # Restore more conservative move requirement
     ETHUSDT:
-      obi_threshold: 0.08           # ETH books are thinner; 8% is a meaningful signal
-      intensity_spike_mult: 6.0     # Require strong but not extreme volume spikes
-      move_bps_trigger: 0.7         # Require moderate physical move to confirm
+      obi_threshold: 0.12           # ETH books are thinner; 12% is a meaningful signal
+      intensity_spike_mult: 8.0     # Require strong volume spikes
+      move_bps_trigger: 1.0         # Require 1.0 bps move to confirm
       exit:
         take_profit_bps: 12.0       # Larger TP for higher volatility
         stop_loss_bps: 6.0

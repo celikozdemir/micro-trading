@@ -400,12 +400,12 @@ class AdvancedMomentumStrategy:
 
         if mid_move_bps > 0 and afi >= p["afi_threshold"] and obi >= p["obi_threshold"] and not p["short_only"]:
             side = "BUY"
-            # Using maker fill model for execution upgrade: Post-Only limit order at best_bid
-            fill = self.fill_model.fill_entry_long(book.bid_price, book.mid_price)
+            # Lift the ASK to enter LONG (Taker model)
+            fill = self.fill_model.fill_entry_long(book.ask_price, book.mid_price)
         elif mid_move_bps < 0 and afi <= -p["afi_threshold"] and obi <= -p["obi_threshold"]:
             side = "SELL"
-            # Using maker fill model for execution upgrade: Post-Only limit order at best_ask
-            fill = self.fill_model.fill_entry_short(book.ask_price, book.mid_price)
+            # Hit the BID to enter SHORT (Taker model)
+            fill = self.fill_model.fill_entry_short(book.bid_price, book.mid_price)
         else:
             return
         # ───────────────────────────────────────────────────────────────
@@ -464,8 +464,8 @@ class AdvancedMomentumStrategy:
             elif hold_ms >= p["max_hold_ms"]:
                 exit_reason = "timeout"
             if exit_reason:
-                # Maker exit assumption for advanced algo: we join the bid to close (or ask to close short)
-                exit_fill = self.fill_model.fill_exit_long(book.ask_price, book.mid_price)
+                # Lift the ASK to exit (Taker buy-back to close short)
+                exit_fill = self.fill_model.fill_exit_long(book.bid_price, book.mid_price)
                 gross_pnl_bps = (exit_fill.price - pos.entry_price) / pos.entry_mid * 10000
                 gross_pnl_usd = (exit_fill.price - pos.entry_price) * pos.qty
         else:  # SELL
@@ -484,7 +484,8 @@ class AdvancedMomentumStrategy:
             elif hold_ms >= p["max_hold_ms"]:
                 exit_reason = "timeout"
             if exit_reason:
-                exit_fill = self.fill_model.fill_exit_short(book.bid_price, book.mid_price)
+                # Lift the ASK to exit (Taker buy-back to close short)
+                exit_fill = self.fill_model.fill_exit_short(book.ask_price, book.mid_price)
                 gross_pnl_bps = (pos.entry_price - exit_fill.price) / pos.entry_mid * 10000
                 gross_pnl_usd = (pos.entry_price - exit_fill.price) * pos.qty
 
