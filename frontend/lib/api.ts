@@ -60,6 +60,20 @@ export interface SymbolStats {
   latest: string | null
 }
 
+export interface SymbolOverride {
+  obi_threshold?: number
+  intensity_spike_mult?: number
+  move_bps_trigger?: number
+  afi_threshold?: number
+  exit?: {
+    take_profit_bps?: number
+    stop_loss_bps?: number
+    max_hold_ms?: number
+    trail_trigger_bps?: number
+    trail_bps?: number
+  }
+}
+
 export interface TradingConfig {
   mode: string
   venue: string
@@ -72,10 +86,26 @@ export interface TradingConfig {
     intensity_filter_window_ms: number
     cooldown_ms: number
     entry_qty: Record<string, number>
+    
+    // ── Phase 2/3 Burst & Trend Gates ─────────────────────────────
+    intensity_spike_mult: number
+    afi_threshold: number
+    obi_threshold: number
+    adaptive_vol_multiplier: number
+    short_only: boolean
+    
+    macro_trend_halflife_ms: number
+    macro_trend_warmup_ms: number
+    // ───────────────────────────────────────────────────────────────
+
+    symbol_overrides?: Record<string, SymbolOverride>
+    
     exit: {
       take_profit_bps: number
       stop_loss_bps: number
       max_hold_ms: number
+      trail_trigger_bps?: number
+      trail_bps?: number
     }
   }
   risk: {
