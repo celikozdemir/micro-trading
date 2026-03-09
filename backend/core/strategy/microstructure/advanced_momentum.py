@@ -34,6 +34,8 @@ from typing import Optional
 
 from backend.core.backtester.fill_model import FillModel
 from backend.core.data.normalizer import AggTrade, BookTick, MarkPrice
+from backend.core.ml.features import FeatureExtractor
+from backend.core.ml.scorer import MLScorer
 
 
 # ------------------------------------------------------------------ #
@@ -139,11 +141,23 @@ class AdvancedMomentumStrategy:
     Completed trades accumulate in self.trades.
     """
 
-    def __init__(self, config: dict, fill_model: FillModel, primary_symbol: str = "BTCUSDT"):
+    def __init__(self, config: dict, fill_model: FillModel, primary_symbol: str = "BTCUSDT",
+                 ml_scorer: MLScorer | None = None):
         s = config["strategy"]
 
         # ── Primary Symbol (for cross-asset correlation) ───────────────
         self.primary_symbol = primary_symbol
+
+        # ── ML Signal Scoring ──────────────────────────────────────────
+        ml_cfg = s.get("ml", {})
+        self.ml_enabled: bool = ml_cfg.get("enabled", False)
+        self.ml_threshold: float = ml_cfg.get("threshold", 0.55)
+        self._ml_scorer = ml_scorer or (MLScorer(ml_cfg.get("model_dir", "models")) if self.ml_enabled else None)
+        self._feature_extractor = FeatureExtractor(
+            sigma_fast_halflife_ms=float(s.get("sigma_fast_halflife_ms", 500)),
+            sigma_slow_halflife_ms=float(s.get("sigma_slow_halflife_ms", 45000)),
+        ) if self.ml_enabled else None
+        # ───────────────────────────────────────────────────────────────
 
         # Determine which symbols we care about
         symbols = config.get("symbols", ["BTCUSDT", "ETHUSDT"])
@@ -225,6 +239,13 @@ class AdvancedMomentumStrategy:
         state = self._get_state(bt.symbol)
         state.last_book = bt
 
+        if self._feature_extractor is not None:
+            self._feature_extractor.on_book_tick(
+                bt.symbol, bt.timestamp_exchange_ms,
+                float(bt.bid_price), float(bt.bid_qty),
+                float(bt.ask_price), float(bt.ask_qty),
+            )
+
         # Update EWMA vol with actual mid price (most accurate)
         self._update_ewma(state, float(bt.mid_price), bt.timestamp_exchange_ms, bt.symbol)
 
@@ -244,6 +265,12 @@ class AdvancedMomentumStrategy:
         now_ms = at.timestamp_exchange_ms
         notional = float(at.qty * at.price)
         is_buy_aggressor = not at.is_buyer_maker
+
+        if self._feature_extractor is not None:
+            self._feature_extractor.on_agg_trade(
+                at.symbol, now_ms,
+                float(at.price), float(at.qty), is_buy_aggressor,
+            )
 
         p = self.sym_params.get(at.symbol)
         if not p:
@@ -478,12 +505,25 @@ class AdvancedMomentumStrategy:
             if p["short_only"]:
                 return  # Skip longs if short_only mode
             side = "BUY"
+            direction = "long"
             fill = self.fill_model.fill_entry_long(book.ask_price, book.mid_price)
         elif mid_move_bps < 0 and afi <= -p["afi_threshold"] and obi <= -p["obi_threshold"]:
             side = "SELL"
+            direction = "short"
             fill = self.fill_model.fill_entry_short(book.bid_price, book.mid_price)
         else:
             return
+        # ───────────────────────────────────────────────────────────────
+
+        # ── ML Confidence Gate ────────────────────────────────────────
+        # If ML scoring is enabled and models are loaded, require
+        # P(profitable) > threshold. Graceful fallback if no model.
+        if self.ml_enabled and self._ml_scorer is not None and self._feature_extractor is not None:
+            features = self._feature_extractor.extract(symbol, now_ms)
+            if features is not None:
+                should_enter, confidence = self._ml_scorer.should_enter(features, direction)
+                if not should_enter:
+                    return
         # ───────────────────────────────────────────────────────────────
 
         qty = self.entry_qty.get(symbol, Decimal("0.001"))

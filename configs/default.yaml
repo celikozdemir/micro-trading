@@ -52,6 +52,13 @@ strategy:
       move_bps_trigger: 1.0
   # ──────────────────────────────────────────────────────────────────
   
+  # ── ML Signal Scoring (Phase 2) ─────────────────────────────────
+  ml:
+    enabled: false               # Set to true after training models
+    threshold: 0.55              # P(profitable) must exceed this to enter
+    model_dir: models            # Directory containing signal_long.json / signal_short.json
+  # ──────────────────────────────────────────────────────────────────
+
   entry_qty:
     BTCUSDT: 0.001
     ETHUSDT: 0.01
