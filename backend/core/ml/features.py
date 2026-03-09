@@ -202,12 +202,12 @@ class FeatureExtractor:
         total_qty = s.bid_qty + s.ask_qty
         obi = (s.bid_qty - s.ask_qty) / total_qty if total_qty > 0 else 0.0
 
-        # Intensity ratio
+        # Intensity ratio (baseline has 2-tuples, trade windows have 3-tuples)
         if len(s.baseline_60s) >= 2:
             span_ms = s.baseline_60s[-1][0] - s.baseline_60s[0][0]
             if span_ms > 5_000:
-                avg_per_sec = sum(n for _, n in s.baseline_60s) / (span_ms / 1_000)
-                notional_1s = sum(n for _, n in s.trade_window_1s)
+                avg_per_sec = sum(r[1] for r in s.baseline_60s) / (span_ms / 1_000)
+                notional_1s = sum(r[1] for r in s.trade_window_1s)
                 intensity_ratio = notional_1s / avg_per_sec if avg_per_sec > 0 else 0.0
             else:
                 intensity_ratio = 0.0
