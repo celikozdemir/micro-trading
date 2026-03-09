@@ -17,19 +17,19 @@ strategy:
   # Gate 1: Relative intensity spike
   # Current 1s notional must exceed this multiple of the 60s-avg-per-sec.
   # 8× = only enter when trading volume is 8 times above normal pace.
-  intensity_spike_mult: 8.0
+  intensity_spike_mult: 4.0
 
   # Gate 2: Volatility expansion (EWMA ratio)
   # sigma_fast (500ms half-life) must exceed vol_expansion_ratio × sigma_slow (45s half-life).
   # Filters out entries during flat markets where move is just ambient noise.
   sigma_fast_halflife_ms: 500    # reacts within one burst duration (~500ms)
   sigma_slow_halflife_ms: 45000
-  vol_expansion_ratio: 2.0      # sigma_fast must be 2× background to trigger
+  vol_expansion_ratio: 1.5      # sigma_fast must be 1.5× background to trigger
 
   # Gate 3: Notional Aggressive Flow Imbalance
   # (buy_notional - sell_notional) / total must exceed afi_threshold in direction of move.
   # 0.5 = buy side must account for ≥75% of notional flow (or ≤25% for shorts).
-  afi_threshold: 0.5
+  afi_threshold: 0.35
 
   # Gate 4: Micro-regime crossover filter (matched to burst timescale)
   # fast EMA (2s) > slow EMA (20s) → micro-uptrend → LONG only; reverse → SHORT only.
@@ -37,10 +37,10 @@ strategy:
   # 1m/5m crossovers are too slow — by the time they cross, the burst is over.
   trend_halflife_ms: 20000         # 20s slow micro-EMA (regime reference)
   short_trend_halflife_ms: 2000    # 2s fast micro-EMA (burst-speed momentum)
-  trend_warmup_ms: 60000           # 60s warmup is enough for 20s EWMA to stabilize
+  trend_warmup_ms: 30000           # 30s warmup is enough for 20s EWMA to stabilize
   
   # ── Advanced Momentum Parameters ──────────────────────────────────
-  obi_threshold: 0.2
+  obi_threshold: 0.10
   short_only: true
   adaptive_vol_multiplier: 0.0
   # ──────────────────────────────────────────────────────────────────
@@ -49,13 +49,13 @@ strategy:
   # BTC has thicker books and lower volatility; ETH is thinner and wilder.
   symbol_overrides:
     BTCUSDT:
-      obi_threshold: 0.25           # Require heavier imbalance on thick BTC books
-      intensity_spike_mult: 6.0     # Lower spike threshold for thick books
-      move_bps_trigger: 0.5         # Smaller physical move required
+      obi_threshold: 0.12           # Still requires clear imbalance on thick BTC books
+      intensity_spike_mult: 3.0     # 3× average volume spike threshold
+      move_bps_trigger: 0.3         # Small physical move required
     ETHUSDT:
-      obi_threshold: 0.15           # ETH books are thinner, 15% is significant
-      intensity_spike_mult: 10.0    # Require massive volume spikes to avoid ETH noise
-      move_bps_trigger: 1.0         # Require larger physical moves to confirm
+      obi_threshold: 0.08           # ETH books are thinner; 8% is a meaningful signal
+      intensity_spike_mult: 6.0     # Require strong but not extreme volume spikes
+      move_bps_trigger: 0.7         # Require moderate physical move to confirm
       exit:
         take_profit_bps: 12.0       # Larger TP for higher volatility
         stop_loss_bps: 6.0

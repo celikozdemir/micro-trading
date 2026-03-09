@@ -166,6 +166,11 @@ class AdvancedMomentumStrategy:
         
         self.cooldown_ms: int = s.get("cooldown_ms", 2000)
         self.max_spread_bps: Decimal = Decimal(str(config["risk"]["max_spread_bps"]))
+
+        # entry_qty — parsed from strategy.entry_qty in config (keyed by symbol)
+        self.entry_qty: dict[str, Decimal] = {
+            sym: Decimal(str(qty)) for sym, qty in s.get("entry_qty", {}).items()
+        }
         
         self.sigma_fast_halflife_ms: float = float(s.get("sigma_fast_halflife_ms", 1500))
         self.sigma_slow_halflife_ms: float = float(s.get("sigma_slow_halflife_ms", 45000))
@@ -194,7 +199,7 @@ class AdvancedMomentumStrategy:
         state.last_book = bt
 
         # Update EWMA vol with actual mid price (most accurate)
-        self._update_ewma(state, float(bt.mid_price), bt.timestamp_exchange_ms)
+        self._update_ewma(state, float(bt.mid_price), bt.timestamp_exchange_ms, bt.symbol)
 
         # Track mid-price history for velocity calculation
         state.mid_history.append((bt.timestamp_exchange_ms, bt.mid_price))
@@ -236,7 +241,7 @@ class AdvancedMomentumStrategy:
             state.baseline_window.popleft()
 
         # Update EWMA vol using trade price as mid proxy between book ticks
-        self._update_ewma(state, float(at.price), now_ms)
+        self._update_ewma(state, float(at.price), now_ms, at.symbol)
 
         # Keep mid_history alive between book ticks (for velocity)
         state.mid_history.append((now_ms, at.price))
@@ -257,7 +262,7 @@ class AdvancedMomentumStrategy:
     # EWMA volatility updater (hot path — floats only)                  #
     # ---------------------------------------------------------------- #
 
-    def _update_ewma(self, state: SymbolState, mid: float, now_ms: int) -> None:
+    def _update_ewma(self, state: SymbolState, mid: float, now_ms: int, symbol: str = "") -> None:
         """Update sigma_fast and sigma_slow with the latest mid-price observation."""
         if state.last_ewma_ms == 0:
             state.last_ewma_mid = mid
@@ -277,12 +282,12 @@ class AdvancedMomentumStrategy:
         # Time-aware EWMA decay: alpha = 1 - exp(-dt / halflife)
         alpha_fast = 1.0 - math.exp(-dt_ms / self.sigma_fast_halflife_ms)
         alpha_slow = 1.0 - math.exp(-dt_ms / self.sigma_slow_halflife_ms)
-        
-        # We need trend halflives. If sym_params doesn't exist (e.g. during replay of unconfigured symbol), use defaults.
-        p = self.sym_params.get(list(self.sym_params.keys())[0], {})
+
+        # Use per-symbol trend halflives — fall back to first symbol if unknown
+        p = self.sym_params.get(symbol) or self.sym_params.get(next(iter(self.sym_params), ""), {})
         trend_halflife = p.get("trend_halflife_ms", 300_000)
         short_trend_halflife = p.get("short_trend_halflife_ms", 60_000)
-        
+
         alpha_trend = 1.0 - math.exp(-dt_ms / trend_halflife)
         alpha_short_trend = 1.0 - math.exp(-dt_ms / short_trend_halflife)
 
