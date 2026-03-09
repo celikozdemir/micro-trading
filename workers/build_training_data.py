@@ -24,83 +24,92 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from backend.config import settings
 from backend.core.ml.features import FEATURE_NAMES, FeatureExtractor
-from backend.db.session import engine
 
 FORWARD_WINDOW_MS = 300_000   # 5-minute forward look for P&L
 FEE_BPS = 4.0                 # round-trip taker fees in bps
-MAKER_FEE_BPS = 2.0           # round-trip maker fees
-BATCH_SIZE = 50_000
+CHUNK_HOURS = 6               # load data in 6-hour chunks to avoid timeouts
+
+# Separate engine with long timeout for batch data loading
+_batch_engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    pool_size=2,
+    max_overflow=0,
+    connect_args={"server_settings": {"statement_timeout": "300000"}},  # 5 min
+)
 
 
-async def load_ticks(symbol: str, start_dt: datetime, end_dt: datetime):
-    """Load interleaved book ticks and agg trades, ordered by exchange timestamp."""
+async def _load_chunk(sql: str, params: dict) -> list:
+    async with _batch_engine.connect() as conn:
+        result = await conn.execute(text(sql), params)
+        return result.fetchall()
 
-    start_ms = int(start_dt.timestamp() * 1000)
-    end_ms = int(end_dt.timestamp() * 1000)
 
-    book_sql = text("""
-        SELECT 'book' as type, timestamp_exchange as ts,
-               bid_price, bid_qty, ask_price, ask_qty,
-               NULL as price, NULL as qty, NULL as is_buyer_maker
-        FROM book_ticks
-        WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e
-    """)
+async def load_ticks_chunked(symbol: str, start_dt: datetime, end_dt: datetime):
+    """Load book ticks and agg trades in time chunks, merge in memory."""
+    all_events = []
+    chunk_start = start_dt
 
-    trade_sql = text("""
-        SELECT 'trade' as type, timestamp_exchange as ts,
-               NULL as bid_price, NULL as bid_qty, NULL as ask_price, NULL as ask_qty,
-               price, qty, is_buyer_maker
-        FROM agg_trades
-        WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e
-    """)
+    while chunk_start < end_dt:
+        chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), end_dt)
+        params = {"sym": symbol, "s": chunk_start, "e": chunk_end}
 
-    combined_sql = text(f"""
-        ({book_sql.text} UNION ALL {trade_sql.text})
-        ORDER BY ts ASC
-    """)
+        t0 = time.time()
 
-    params = {"sym": symbol, "s": start_dt, "e": end_dt}
+        books = await _load_chunk(
+            "SELECT timestamp_exchange, bid_price, bid_qty, ask_price, ask_qty "
+            "FROM book_ticks WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e "
+            "ORDER BY timestamp_exchange",
+            params,
+        )
+        trades = await _load_chunk(
+            "SELECT timestamp_exchange, price, qty, is_buyer_maker "
+            "FROM agg_trades WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e "
+            "ORDER BY timestamp_exchange",
+            params,
+        )
 
-    print(f"Loading ticks for {symbol} from {start_dt} to {end_dt}...")
-    t0 = time.time()
+        # Tag and merge
+        for r in books:
+            all_events.append(("book", r[0], r[1], r[2], r[3], r[4], None, None, None))
+        for r in trades:
+            all_events.append(("trade", r[0], None, None, None, None, r[1], r[2], r[3]))
 
-    async with engine.connect() as conn:
-        result = await conn.execute(combined_sql, params)
-        rows = result.fetchall()
+        elapsed = time.time() - t0
+        print(f"  Chunk {chunk_start.strftime('%m/%d %H:%M')} → {chunk_end.strftime('%H:%M')}: "
+              f"{len(books):,} books + {len(trades):,} trades ({elapsed:.1f}s)")
 
-    elapsed = time.time() - t0
-    print(f"  Loaded {len(rows):,} ticks in {elapsed:.1f}s")
-    return rows
+        chunk_start = chunk_end
+
+    # Sort by timestamp
+    all_events.sort(key=lambda x: x[1])
+    print(f"  Total: {len(all_events):,} events")
+    return all_events
 
 
 async def load_forward_prices(symbol: str, start_dt: datetime, end_dt: datetime):
-    """
-    Load mid-price samples for forward-looking labeling.
-    Uses book ticks sampled at ~1s granularity for efficiency.
-    """
-    sql = text("""
-        SELECT
-            EXTRACT(EPOCH FROM timestamp_exchange) * 1000 as ts_ms,
-            (bid_price + ask_price) / 2.0 as mid
-        FROM book_ticks
-        WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e
-        ORDER BY timestamp_exchange ASC
-    """)
-    params = {"sym": symbol, "s": start_dt, "e": end_dt}
+    """Load mid-price samples for forward-looking labeling, in chunks."""
+    all_prices = []
+    chunk_start = start_dt
 
-    print(f"Loading forward prices for labeling...")
-    t0 = time.time()
+    while chunk_start < end_dt:
+        chunk_end = min(chunk_start + timedelta(hours=CHUNK_HOURS), end_dt)
+        rows = await _load_chunk(
+            "SELECT EXTRACT(EPOCH FROM timestamp_exchange) * 1000, "
+            "(bid_price + ask_price) / 2.0 "
+            "FROM book_ticks WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e "
+            "ORDER BY timestamp_exchange",
+            {"sym": symbol, "s": chunk_start, "e": chunk_end},
+        )
+        all_prices.extend(rows)
+        chunk_start = chunk_end
 
-    async with engine.connect() as conn:
-        result = await conn.execute(sql, params)
-        rows = result.fetchall()
-
-    elapsed = time.time() - t0
-    print(f"  Loaded {len(rows):,} price points in {elapsed:.1f}s")
-    return rows
+    print(f"  Forward prices: {len(all_prices):,} points")
+    return all_prices
 
 
 def compute_forward_labels(
@@ -145,8 +154,8 @@ async def build_dataset(symbol: str, days: int, sample_ms: int = 1000, fee_bps: 
     label_end_dt = end_dt
     data_end_dt = end_dt + timedelta(milliseconds=FORWARD_WINDOW_MS)
 
-    # Load all data
-    ticks = await load_ticks(symbol, start_dt, data_end_dt)
+    # Load all data in chunks to avoid timeouts
+    ticks = await load_ticks_chunked(symbol, start_dt, data_end_dt)
     fwd_prices = await load_forward_prices(symbol, start_dt, data_end_dt)
 
     if len(ticks) < 1000 or len(fwd_prices) < 100:
@@ -165,10 +174,15 @@ async def build_dataset(symbol: str, days: int, sample_ms: int = 1000, fee_bps: 
     samples = []
     warmup_ms = 60_000  # skip first 60s for EWMA warmup
 
+    first_ts = ticks[0][1]
+    first_ts_ms = first_ts.timestamp() * 1000 if hasattr(first_ts, 'timestamp') else float(first_ts)
+    warmup_cutoff = first_ts_ms + warmup_ms
+
     print(f"Replaying {len(ticks):,} ticks, sampling every {sample_ms}ms...")
     t0 = time.time()
+    report_interval = len(ticks) // 10 or 1
 
-    for row in ticks:
+    for idx, row in enumerate(ticks):
         tick_type = row[0]
         ts = row[1]
         ts_ms = ts.timestamp() * 1000 if hasattr(ts, 'timestamp') else float(ts)
@@ -186,8 +200,12 @@ async def build_dataset(symbol: str, days: int, sample_ms: int = 1000, fee_bps: 
                 not bool(row[8]),  # is_buyer_maker → is_buy_aggressor
             )
 
+        if idx % report_interval == 0 and idx > 0:
+            pct = idx / len(ticks) * 100
+            print(f"    {pct:.0f}% ({len(samples):,} samples so far)")
+
         # Sample at intervals after warmup, but don't label beyond end_label
-        if ts_ms - last_sample_ms >= sample_ms and ts_ms > (ticks[0][1].timestamp() * 1000 + warmup_ms):
+        if ts_ms - last_sample_ms >= sample_ms and ts_ms > warmup_cutoff:
             if ts_ms < end_label_ms:
                 feat = extractor.extract(symbol, int(ts_ms))
                 if feat is not None:
@@ -243,7 +261,7 @@ async def main():
     args = parser.parse_args()
 
     await build_dataset(args.symbol, args.days, args.sample_ms, args.fee_bps)
-    await engine.dispose()
+    await _batch_engine.dispose()
 
 
 if __name__ == "__main__":
