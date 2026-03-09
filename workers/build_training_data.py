@@ -31,7 +31,7 @@ from backend.core.ml.features import FEATURE_NAMES, FeatureExtractor
 
 FORWARD_WINDOW_MS = 300_000   # 5-minute forward look for P&L
 FEE_BPS = 4.0                 # round-trip taker fees in bps
-CHUNK_HOURS = 6               # load data in 6-hour chunks to avoid timeouts
+CHUNK_HOURS = 3               # load data in 3-hour chunks to avoid timeouts
 
 # Separate engine with long timeout for batch data loading
 _batch_engine = create_async_engine(
@@ -39,7 +39,7 @@ _batch_engine = create_async_engine(
     echo=False,
     pool_size=2,
     max_overflow=0,
-    connect_args={"server_settings": {"statement_timeout": "300000"}},  # 5 min
+    connect_args={"server_settings": {"statement_timeout": "600000"}},  # 10 min
 )
 
 
@@ -62,14 +62,12 @@ async def load_ticks_chunked(symbol: str, start_dt: datetime, end_dt: datetime):
 
         books = await _load_chunk(
             "SELECT timestamp_exchange, bid_price, bid_qty, ask_price, ask_qty "
-            "FROM book_ticks WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e "
-            "ORDER BY timestamp_exchange",
+            "FROM book_ticks WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e",
             params,
         )
         trades = await _load_chunk(
             "SELECT timestamp_exchange, price, qty, is_buyer_maker "
-            "FROM agg_trades WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e "
-            "ORDER BY timestamp_exchange",
+            "FROM agg_trades WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e",
             params,
         )
 
@@ -101,13 +99,13 @@ async def load_forward_prices(symbol: str, start_dt: datetime, end_dt: datetime)
         rows = await _load_chunk(
             "SELECT EXTRACT(EPOCH FROM timestamp_exchange) * 1000, "
             "(bid_price + ask_price) / 2.0 "
-            "FROM book_ticks WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e "
-            "ORDER BY timestamp_exchange",
+            "FROM book_ticks WHERE symbol = :sym AND timestamp_exchange >= :s AND timestamp_exchange < :e",
             {"sym": symbol, "s": chunk_start, "e": chunk_end},
         )
         all_prices.extend(rows)
         chunk_start = chunk_end
 
+    all_prices.sort(key=lambda x: x[0])
     print(f"  Forward prices: {len(all_prices):,} points")
     return all_prices
 
