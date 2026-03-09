@@ -69,11 +69,11 @@ strategy:
     # Maker fill model cost: 2 bps fee/side × 2 = 4 bps round-trip (no slippage).
     # Break-even with 62% win rate: TP net = 10-4 = +6 bps, SL net = -(6+4) = -10 bps.
     # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
-    max_hold_ms: 45000        # 45s: Give the wider bands more time to work
-    take_profit_bps: 20.0       # Widened: Net +16 bps after 4 bps maker cost
-    stop_loss_bps: 10.0         # Widened: Net -14 bps — gives trade room to breathe
-    trail_trigger_bps: 8.0      # Start trailing once gross >= 8 bps
-    trail_bps: 4.0              # Trail 4 bps below high watermark
+    max_hold_ms: 60000        # 1m: Allow for structural distribution to play out
+    take_profit_bps: 30.0       # Widened: Net +26 bps after 4 bps maker cost
+    stop_loss_bps: 15.0         # Widened: Net -19 bps — protects against volatility
+    trail_trigger_bps: 12.0     # Start trailing once gross >= 12 bps (3:1 vs fee)
+    trail_bps: 6.0              # Trail 6 bps below high watermark
   cooldown_ms: 2000           # 2s: prevents re-entering the same burst 3-4 times
 risk:
   max_trades_per_min: 60

@@ -81,6 +81,7 @@ class SymbolState:
     
     # ── Macro Regime Filter ──────────────────────────────────────────
     macro_trend_ewma: float = 0.0    # slow EWMA of mid-price (e.g. 15-min)
+    macro_trend_ewma_prev: float = 0.0 # for slope detection
     macro_trend_start_ms: int = 0    # warm-up check for macro trend
     # ─────────────────────────────────────────────────────────────────
 
@@ -308,11 +309,15 @@ class AdvancedMomentumStrategy:
             state.trend_ewma = mid
             state.short_trend_ewma = mid
             state.macro_trend_ewma = mid
+            state.macro_trend_ewma_prev = mid
             state.trend_ewma_start_ms = now_ms
             state.macro_trend_start_ms = now_ms
         else:
             state.trend_ewma = alpha_trend * mid + (1.0 - alpha_trend) * state.trend_ewma
             state.short_trend_ewma = alpha_short_trend * mid + (1.0 - alpha_short_trend) * state.short_trend_ewma
+            
+            # Store prev for slope before updating
+            state.macro_trend_ewma_prev = state.macro_trend_ewma
             state.macro_trend_ewma = alpha_macro * mid + (1.0 - alpha_macro) * state.macro_trend_ewma
 
         state.last_ewma_mid = mid
@@ -385,13 +390,25 @@ class AdvancedMomentumStrategy:
                 return  # bearish burst but 1-min EWMA is above 5-min — uptrend — skip
         # ───────────────────────────────────────────────────────────────
 
-        # ── Gate 6: Macro Trend Filter ────────────────────────────────
-        # If short_only, only enters if price is below the 15-min macro EMA.
-        # This prevents "catching a falling knife" during a strong bull trend.
+        # ── Gate 6: Macro Trend Filter & Triple Alignment ─────────────
+        # If short_only, we enforce a strict structural alignment:
+        # 1. Price must be below the 15-min macro EMA.
+        # 2. Macro EMA must be declining (slope < 0).
+        # 3. Triple Alignment: Short EMA < Slow EMA < Macro EMA.
         if p["short_only"] and state.macro_trend_ewma > 0.0:
             if now_ms - state.macro_trend_start_ms >= p["macro_trend_warmup_ms"]:
+                # Condition 1: Under macro trend
                 if float(book.mid_price) > state.macro_trend_ewma:
-                    return  # Over macro trend — skip shorts
+                    return
+                    
+                # Condition 2: Macro Slope (must be declining)
+                if state.macro_trend_ewma >= state.macro_trend_ewma_prev:
+                    return 
+                    
+                # Condition 3: Triple Alignment (Structural breakdown)
+                # short_trend_ewma (2s) < trend_ewma (20s) < macro_trend_ewma (15m)
+                if not (state.short_trend_ewma < state.trend_ewma < state.macro_trend_ewma):
+                    return
         # ───────────────────────────────────────────────────────────────
 
         # ── Gate 3: Notional AFI ────────────────────────────────────────
