@@ -84,6 +84,11 @@ class SymbolState:
     macro_trend_ewma_prev: float = 0.0 # for slope detection
     macro_trend_start_ms: int = 0    # warm-up check for macro trend
     # ─────────────────────────────────────────────────────────────────
+    
+    # ── Volatility Regime Detection ──────────────────────────────────
+    vol_history: deque = field(default_factory=deque)  # (ts_ms, abs_return)
+    realized_vol_5m: float = 0.0   # rolling 5-min realized volatility (bps)
+    # ─────────────────────────────────────────────────────────────────
 
     # Most recent book tick (needed for exit checks triggered by agg_trades)
     last_book: Optional[BookTick] = None
@@ -322,6 +327,16 @@ class AdvancedMomentumStrategy:
 
         state.last_ewma_mid = mid
         state.last_ewma_ms = now_ms
+        
+        # ── 5-min Realized Volatility Tracker ───────────────────────────
+        abs_ret_bps = abs(ret * 10000)
+        state.vol_history.append((now_ms, abs_ret_bps))
+        cutoff_5m = now_ms - 300_000
+        while state.vol_history and state.vol_history[0][0] < cutoff_5m:
+            state.vol_history.popleft()
+        if len(state.vol_history) > 10:
+            state.realized_vol_5m = sum(v for _, v in state.vol_history) / len(state.vol_history)
+        # ───────────────────────────────────────────────────────────────
 
     # ---------------------------------------------------------------- #
     # Entry logic — all gates must pass                                  #
@@ -390,25 +405,22 @@ class AdvancedMomentumStrategy:
                 return  # bearish burst but 1-min EWMA is above 5-min — uptrend — skip
         # ───────────────────────────────────────────────────────────────
 
-        # ── Gate 6: Macro Trend Filter & Triple Alignment ─────────────
-        # If short_only, we enforce a strict structural alignment:
-        # 1. Price must be below the 15-min macro EMA.
-        # 2. Macro EMA must be declining (slope < 0).
-        # 3. Triple Alignment: Short EMA < Slow EMA < Macro EMA.
-        if p["short_only"] and state.macro_trend_ewma > 0.0:
+        # ── Gate 6: Macro Trend Alignment ───────────────────────────────
+        # Only enter in the direction of the macro trend.
+        # For SHORTS: price < macro EMA and macro EMA declining.
+        # For LONGS:  price > macro EMA and macro EMA rising.
+        if state.macro_trend_ewma > 0.0:
             if now_ms - state.macro_trend_start_ms >= p["macro_trend_warmup_ms"]:
-                # Condition 1: Under macro trend
-                if float(book.mid_price) > state.macro_trend_ewma:
-                    return
-                    
-                # Condition 2: Macro Slope (must be declining)
-                if state.macro_trend_ewma >= state.macro_trend_ewma_prev:
-                    return 
-                    
-                # Condition 3: Triple Alignment (Structural breakdown)
-                # short_trend_ewma (2s) < trend_ewma (20s) < macro_trend_ewma (15m)
-                if not (state.short_trend_ewma < state.trend_ewma < state.macro_trend_ewma):
-                    return
+                mid_price = float(book.mid_price)
+                macro_rising = state.macro_trend_ewma > state.macro_trend_ewma_prev
+                macro_falling = state.macro_trend_ewma < state.macro_trend_ewma_prev
+                
+                if mid_move_bps > 0:  # Bullish burst → wants to go LONG
+                    if mid_price < state.macro_trend_ewma or not macro_rising:
+                        return  # Don't go long below a declining macro trend
+                elif mid_move_bps < 0:  # Bearish burst → wants to go SHORT
+                    if mid_price > state.macro_trend_ewma or not macro_falling:
+                        return  # Don't short above a rising macro trend
         # ───────────────────────────────────────────────────────────────
 
         # ── Gate 3: Notional AFI ────────────────────────────────────────
@@ -436,7 +448,9 @@ class AdvancedMomentumStrategy:
                     return # Primary is bullish, ignore short altcoin burst
         # ───────────────────────────────────────────────────────────────
 
-        if mid_move_bps > 0 and afi >= p["afi_threshold"] and obi >= p["obi_threshold"] and not p["short_only"]:
+        if mid_move_bps > 0 and afi >= p["afi_threshold"] and obi >= p["obi_threshold"]:
+            if p["short_only"]:
+                return  # Skip longs if short_only mode
             side = "BUY"
             # Lift the ASK to enter LONG (Taker model)
             fill = self.fill_model.fill_entry_long(book.ask_price, book.mid_price)
@@ -461,6 +475,26 @@ class AdvancedMomentumStrategy:
     # Exit logic                                                         #
     # ---------------------------------------------------------------- #
 
+    def _get_regime_params(self, symbol: str, state: 'SymbolState') -> tuple[float, float, int]:
+        """Return (take_profit_bps, stop_loss_bps, max_hold_ms) based on volatility regime."""
+        p = self.sym_params.get(symbol, {})
+        vol = state.realized_vol_5m
+        
+        # Regime boundaries (average absolute return in bps per tick)
+        # These are empirically reasonable for BTC/ETH futures
+        low_vol_threshold = 0.3   # Very quiet market
+        high_vol_threshold = 1.5  # Volatile market
+        
+        if vol < low_vol_threshold:
+            # Low vol: tight targets, fast exits — small, reliable moves
+            return (15.0, 8.0, 60_000)    # 1 min hold, 15 bps TP
+        elif vol < high_vol_threshold:
+            # Medium vol: balanced — the sweet spot for momentum
+            return (30.0, 15.0, 120_000)  # 2 min hold, 30 bps TP
+        else:
+            # High vol: wide bands, patient — let the move develop
+            return (50.0, 25.0, 300_000)  # 5 min hold, 50 bps TP
+
     def _check_exit(self, symbol: str, now_ms: int, book: BookTick) -> None:
         state = self._get_state(symbol)
         pos = state.open_position
@@ -470,6 +504,10 @@ class AdvancedMomentumStrategy:
         p = self.sym_params.get(symbol)
         if not p: return
         
+        # ── Regime-Adaptive Parameters ───────────────────────────────────
+        regime_tp, regime_sl, regime_hold = self._get_regime_params(symbol, state)
+        # ───────────────────────────────────────────────────────────────
+        
         hold_ms = now_ms - pos.entry_time_ms
         exit_reason: str | None = None
         exit_fill = None
@@ -478,11 +516,11 @@ class AdvancedMomentumStrategy:
         if p["adaptive_vol_multiplier"] > 0 and state.sigma_slow > 0:
             # Scale TP/SL based on current volatility regime
             vol_adjustment = Decimal(str(max(0.5, min(3.0, state.sigma_slow * p["adaptive_vol_multiplier"]))))
-            dynamic_tp = Decimal(str(p["take_profit_bps"])) * vol_adjustment
-            dynamic_sl = Decimal(str(p["stop_loss_bps"])) * vol_adjustment
+            dynamic_tp = Decimal(str(regime_tp)) * vol_adjustment
+            dynamic_sl = Decimal(str(regime_sl)) * vol_adjustment
         else:
-            dynamic_tp = Decimal(str(p["take_profit_bps"]))
-            dynamic_sl = Decimal(str(p["stop_loss_bps"]))
+            dynamic_tp = Decimal(str(regime_tp))
+            dynamic_sl = Decimal(str(regime_sl))
 
         if pos.side == "BUY":
             pnl_bps = (book.bid_price - pos.entry_price) / pos.entry_mid * 10000
@@ -491,15 +529,18 @@ class AdvancedMomentumStrategy:
             if pnl_f > pos.high_watermark_bps:
                 pos.high_watermark_bps = pnl_f
             # Trailing stop: once peak >= trigger, stop trails trail_bps below the peak
-            if pos.high_watermark_bps >= p["trail_trigger_bps"]:
-                is_stopped = pnl_f <= pos.high_watermark_bps - p["trail_bps"]
+            # Use regime-proportional trail trigger (30% of TP target)
+            trail_trigger = regime_tp * 0.4
+            trail_distance = regime_tp * 0.2
+            if pos.high_watermark_bps >= trail_trigger:
+                is_stopped = pnl_f <= pos.high_watermark_bps - trail_distance
             else:
                 is_stopped = pnl_bps <= -dynamic_sl
             if pnl_bps >= dynamic_tp:
                 exit_reason = "take_profit"
             elif is_stopped:
                 exit_reason = "stop_loss"
-            elif hold_ms >= p["max_hold_ms"]:
+            elif hold_ms >= regime_hold: # Use regime-adaptive max_hold_ms
                 exit_reason = "timeout"
             if exit_reason:
                 # Lift the ASK to exit (Taker buy-back to close short)
@@ -511,15 +552,17 @@ class AdvancedMomentumStrategy:
             pnl_f = float(pnl_bps)
             if pnl_f > pos.high_watermark_bps:
                 pos.high_watermark_bps = pnl_f
-            if pos.high_watermark_bps >= p["trail_trigger_bps"]:
-                is_stopped = pnl_f <= pos.high_watermark_bps - p["trail_bps"]
+            trail_trigger = regime_tp * 0.4
+            trail_distance = regime_tp * 0.2
+            if pos.high_watermark_bps >= trail_trigger:
+                is_stopped = pnl_f <= pos.high_watermark_bps - trail_distance
             else:
                 is_stopped = pnl_bps <= -dynamic_sl
             if pnl_bps >= dynamic_tp:
                 exit_reason = "take_profit"
             elif is_stopped:
                 exit_reason = "stop_loss"
-            elif hold_ms >= p["max_hold_ms"]:
+            elif hold_ms >= regime_hold:
                 exit_reason = "timeout"
             if exit_reason:
                 # Lift the ASK to exit (Taker buy-back to close short)

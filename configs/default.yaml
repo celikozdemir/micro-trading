@@ -17,63 +17,55 @@ strategy:
   intensity_spike_mult: 4.0     # Global floor (BTC/ETH have specific overrides below)
 
   # Gate 2: Volatility expansion (EWMA ratio)
-  # sigma_fast (500ms half-life) must exceed vol_expansion_ratio × sigma_slow (45s half-life).
-  # Filters out entries during flat markets where move is just ambient noise.
   sigma_fast_halflife_ms: 500    # reacts within one burst duration (~500ms)
   sigma_slow_halflife_ms: 45000
   vol_expansion_ratio: 1.5      # sigma_fast must be 1.5× background to trigger
 
   # Gate 3: Notional Aggressive Flow Imbalance
-  # (buy_notional - sell_notional) / total must exceed afi_threshold in direction of move.
-  # 0.5 = buy side must account for ≥75% of notional flow (or ≤25% for shorts).
   afi_threshold: 0.45
 
-  # Gate 4: Micro-regime crossover filter (matched to burst timescale)
-  # fast EMA (2s) > slow EMA (20s) → micro-uptrend → LONG only; reverse → SHORT only.
-  # Both halflives match the burst window (~250ms–5s), not macro trend-following.
-  # 1m/5m crossovers are too slow — by the time they cross, the burst is over.
+  # Gate 4: Micro-regime crossover filter
   trend_halflife_ms: 20000         # 20s slow micro-EMA (regime reference)
   short_trend_halflife_ms: 2000    # 2s fast micro-EMA (burst-speed momentum)
   trend_warmup_ms: 30000           # 30s warmup is enough for 20s EWMA to stabilize
 
-  # ── Macro Regime Parameters (15m filter) ──────────────────────────
+  # ── Macro Regime Parameters (15m filter) ────────────────────────
   macro_trend_halflife_ms: 900000  # 15-minute macro regime
   macro_trend_warmup_ms: 600000    # 10-minute stabilization before gate fires
   
-  # ── Advanced Momentum Parameters ──────────────────────────────────
+  # ── Advanced Momentum Parameters ────────────────────────────────
   obi_threshold: 0.15
-  short_only: true
+  short_only: false              # ← BIDIRECTIONAL: trade both longs and shorts
   adaptive_vol_multiplier: 0.0
   # ──────────────────────────────────────────────────────────────────
   
   # ── Per-Symbol Overrides ──────────────────────────────────────────
-  # BTC has thicker books and lower volatility; ETH is thinner and wilder.
   symbol_overrides:
     BTCUSDT:
       obi_threshold: 0.18           
       intensity_spike_mult: 4.0     
-      move_bps_trigger: 0.6         # Slightly more selective on BTC move
+      move_bps_trigger: 0.6
     ETHUSDT:
       obi_threshold: 0.12           
       intensity_spike_mult: 8.0     
-      move_bps_trigger: 1.0         
-      exit:
-        take_profit_bps: 12.0       # Larger TP for higher volatility
-        stop_loss_bps: 6.0
+      move_bps_trigger: 1.0
   # ──────────────────────────────────────────────────────────────────
   
   entry_qty:
     BTCUSDT: 0.001
     ETHUSDT: 0.01
   exit:
-    # Maker fill model cost: 2 bps fee/side × 2 = 4 bps round-trip (no slippage).
-    # Break-even with 62% win rate: TP net = 10-4 = +6 bps, SL net = -(6+4) = -10 bps.
-    # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
-    max_hold_ms: 15000        # 15s: Reverting to burst-speed bets
-    take_profit_bps: 12.0       # Tightened: Net +8 bps after maker fees
-    stop_loss_bps: 7.0          # Tightened: Net -11 bps 
-    trail_trigger_bps: 6.0      # Start trailing early (net +2 profit)
-    trail_bps: 3.0              # Tight trail to capture micro-spikes
+    # NOTE: These are now FALLBACK values only.
+    # The strategy uses regime-adaptive TP/SL/hold based on 5-min realized vol:
+    #   Low vol:    TP=15,  SL=8,   hold=60s
+    #   Medium vol: TP=30,  SL=15,  hold=120s
+    #   High vol:   TP=50,  SL=25,  hold=300s
+    # Trail trigger/distance are also regime-proportional (40%/20% of TP).
+    max_hold_ms: 120000        # 2 min default (overridden by regime)
+    take_profit_bps: 30.0      # Medium-vol default (overridden by regime)
+    stop_loss_bps: 15.0
+    trail_trigger_bps: 12.0    # Legacy: now regime-proportional
+    trail_bps: 6.0             # Legacy: now regime-proportional
   cooldown_ms: 2000           # 2s: prevents re-entering the same burst 3-4 times
 risk:
   max_trades_per_min: 60
