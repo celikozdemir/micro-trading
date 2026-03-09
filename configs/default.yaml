@@ -10,8 +10,8 @@ data_streams:
 strategy:
   type: burst_momentum
   window_ms: 250             # burst detection window for AFI / trade-count (ms)
-  trade_count_trigger: 5     # minimum trades in window (noise floor only)
-  move_bps_trigger: 0.5      # almost no price-move required — let flow gates drive timing
+  trade_count_trigger: 3     # Reduced floor since OBI/AFI/Macro are more selective
+  move_bps_trigger: 0.5      # Physical move required for burst confirmation
 
   # ── Three-gate signal filters (all must fire simultaneously) ──────
   intensity_spike_mult: 4.0     # Global floor (BTC/ETH have specific overrides below)
@@ -35,6 +35,10 @@ strategy:
   trend_halflife_ms: 20000         # 20s slow micro-EMA (regime reference)
   short_trend_halflife_ms: 2000    # 2s fast micro-EMA (burst-speed momentum)
   trend_warmup_ms: 30000           # 30s warmup is enough for 20s EWMA to stabilize
+
+  # ── Macro Regime Parameters (15m filter) ──────────────────────────
+  macro_trend_halflife_ms: 900000  # 15-minute macro regime
+  macro_trend_warmup_ms: 600000    # 10-minute stabilization before gate fires
   
   # ── Advanced Momentum Parameters ──────────────────────────────────
   obi_threshold: 0.15
@@ -46,13 +50,13 @@ strategy:
   # BTC has thicker books and lower volatility; ETH is thinner and wilder.
   symbol_overrides:
     BTCUSDT:
-      obi_threshold: 0.18           # Still requires clear imbalance on thick BTC books
-      intensity_spike_mult: 4.0     # 4× average volume spike threshold
-      move_bps_trigger: 0.5         # Restore more conservative move requirement
+      obi_threshold: 0.18           
+      intensity_spike_mult: 4.0     
+      move_bps_trigger: 0.6         # Slightly more selective on BTC move
     ETHUSDT:
-      obi_threshold: 0.12           # ETH books are thinner; 12% is a meaningful signal
-      intensity_spike_mult: 8.0     # Require strong volume spikes
-      move_bps_trigger: 1.0         # Require 1.0 bps move to confirm
+      obi_threshold: 0.12           
+      intensity_spike_mult: 8.0     
+      move_bps_trigger: 1.0         
       exit:
         take_profit_bps: 12.0       # Larger TP for higher volatility
         stop_loss_bps: 6.0
@@ -65,11 +69,11 @@ strategy:
     # Maker fill model cost: 2 bps fee/side × 2 = 4 bps round-trip (no slippage).
     # Break-even with 62% win rate: TP net = 10-4 = +6 bps, SL net = -(6+4) = -10 bps.
     # 0.62 × 6 > 0.38 × 10 → 3.72 > 3.80 — need ~63%; achievable for genuine bursts.
-    max_hold_ms: 30000        # 30s: let trailing stop manage exits; timeout only as last resort
-    take_profit_bps: 10.0       # gross TP; net = +6 bps after 4 bps maker cost
-    stop_loss_bps: 5.0          # gross SL; net = -9 bps — 3 bps was below market noise floor
-    trail_trigger_bps: 4.0      # start trailing once gross >= 4 bps (fee breakeven)
-    trail_bps: 2.0              # trail 2 bps below high watermark (peak=6→stop=4, peak=8→stop=6)
+    max_hold_ms: 45000        # 45s: Give the wider bands more time to work
+    take_profit_bps: 20.0       # Widened: Net +16 bps after 4 bps maker cost
+    stop_loss_bps: 10.0         # Widened: Net -14 bps — gives trade room to breathe
+    trail_trigger_bps: 8.0      # Start trailing once gross >= 8 bps
+    trail_bps: 4.0              # Trail 4 bps below high watermark
   cooldown_ms: 2000           # 2s: prevents re-entering the same burst 3-4 times
 risk:
   max_trades_per_min: 60

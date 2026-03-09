@@ -78,6 +78,11 @@ class SymbolState:
     trend_ewma: float = 0.0          # slow EWMA of mid-price (5-min halflife)
     short_trend_ewma: float = 0.0    # fast EWMA of mid-price (1-min halflife)
     trend_ewma_start_ms: int = 0     # timestamp of first observation (warm-up check)
+    
+    # ── Macro Regime Filter ──────────────────────────────────────────
+    macro_trend_ewma: float = 0.0    # slow EWMA of mid-price (e.g. 15-min)
+    macro_trend_start_ms: int = 0    # warm-up check for macro trend
+    # ─────────────────────────────────────────────────────────────────
 
     # Most recent book tick (needed for exit checks triggered by agg_trades)
     last_book: Optional[BookTick] = None
@@ -162,6 +167,9 @@ class AdvancedMomentumStrategy:
                 "obi_threshold": float(sym_s.get("obi_threshold", 0.2)),
                 "short_only": bool(sym_s.get("short_only", True)),
                 "adaptive_vol_multiplier": float(sym_s.get("adaptive_vol_multiplier", 0.0)),
+                
+                "macro_trend_halflife_ms": float(sym_s.get("macro_trend_halflife_ms", 900_000)),
+                "macro_trend_warmup_ms": int(sym_s.get("macro_trend_warmup_ms", 600_000)),
             }
         
         self.cooldown_ms: int = s.get("cooldown_ms", 2000)
@@ -283,13 +291,14 @@ class AdvancedMomentumStrategy:
         alpha_fast = 1.0 - math.exp(-dt_ms / self.sigma_fast_halflife_ms)
         alpha_slow = 1.0 - math.exp(-dt_ms / self.sigma_slow_halflife_ms)
 
-        # Use per-symbol trend halflives — fall back to first symbol if unknown
         p = self.sym_params.get(symbol) or self.sym_params.get(next(iter(self.sym_params), ""), {})
         trend_halflife = p.get("trend_halflife_ms", 300_000)
         short_trend_halflife = p.get("short_trend_halflife_ms", 60_000)
-
+        macro_halflife = p.get("macro_trend_halflife_ms", 900_000)
+        
         alpha_trend = 1.0 - math.exp(-dt_ms / trend_halflife)
         alpha_short_trend = 1.0 - math.exp(-dt_ms / short_trend_halflife)
+        alpha_macro = 1.0 - math.exp(-dt_ms / macro_halflife)
 
         state.sigma_fast = alpha_fast * ret + (1.0 - alpha_fast) * state.sigma_fast
         state.sigma_slow = alpha_slow * ret + (1.0 - alpha_slow) * state.sigma_slow
@@ -298,10 +307,13 @@ class AdvancedMomentumStrategy:
         if state.trend_ewma == 0.0:
             state.trend_ewma = mid
             state.short_trend_ewma = mid
+            state.macro_trend_ewma = mid
             state.trend_ewma_start_ms = now_ms
+            state.macro_trend_start_ms = now_ms
         else:
             state.trend_ewma = alpha_trend * mid + (1.0 - alpha_trend) * state.trend_ewma
             state.short_trend_ewma = alpha_short_trend * mid + (1.0 - alpha_short_trend) * state.short_trend_ewma
+            state.macro_trend_ewma = alpha_macro * mid + (1.0 - alpha_macro) * state.macro_trend_ewma
 
         state.last_ewma_mid = mid
         state.last_ewma_ms = now_ms
@@ -371,6 +383,15 @@ class AdvancedMomentumStrategy:
                 return  # bullish burst but 1-min EWMA is below 5-min — downtrend — skip
             if mid_move_bps < 0 and is_uptrend:
                 return  # bearish burst but 1-min EWMA is above 5-min — uptrend — skip
+        # ───────────────────────────────────────────────────────────────
+
+        # ── Gate 6: Macro Trend Filter ────────────────────────────────
+        # If short_only, only enters if price is below the 15-min macro EMA.
+        # This prevents "catching a falling knife" during a strong bull trend.
+        if p["short_only"] and state.macro_trend_ewma > 0.0:
+            if now_ms - state.macro_trend_start_ms >= p["macro_trend_warmup_ms"]:
+                if float(book.mid_price) > state.macro_trend_ewma:
+                    return  # Over macro trend — skip shorts
         # ───────────────────────────────────────────────────────────────
 
         # ── Gate 3: Notional AFI ────────────────────────────────────────
