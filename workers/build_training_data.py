@@ -112,6 +112,9 @@ async def load_forward_prices(symbol: str, start_dt: datetime, end_dt: datetime)
     return all_prices
 
 
+EXIT_OFFSETS_MS = [60_000, 120_000, 300_000]  # check at 1m, 2m, 5m
+
+
 def compute_forward_labels(
     ts_ms: float,
     mid_price: float,
@@ -120,30 +123,46 @@ def compute_forward_labels(
     fee_bps: float = FEE_BPS,
 ) -> tuple[int, int, float, float]:
     """
-    Given a candidate entry at (ts_ms, mid_price), look forward FORWARD_WINDOW_MS
-    and determine if a LONG or SHORT would be profitable net of fees.
+    Realistic labeling: check if entry would be profitable at FIXED forward
+    offsets (1m, 2m, 5m). Uses the price at the CLOSE of the hold period,
+    not the best achievable — this matches actual trading outcomes.
 
-    Returns: (label_long, label_short, best_long_bps, best_short_bps)
+    Label = 1 if ANY of the forward offsets shows a net profit after fees.
+    Also tracks the 2-minute forward return as the primary signal.
+
+    Returns: (label_long, label_short, fwd_2m_long_bps, fwd_2m_short_bps)
     """
-    end_ms = ts_ms + FORWARD_WINDOW_MS
+    long_profitable = False
+    short_profitable = False
+    fwd_2m_long_bps = 0.0
+    fwd_2m_short_bps = 0.0
 
-    # Find the slice of forward prices
-    start_idx = np.searchsorted(price_index, ts_ms, side="left")
-    end_idx = np.searchsorted(price_index, end_ms, side="right")
+    for offset_ms in EXIT_OFFSETS_MS:
+        target_ms = ts_ms + offset_ms
+        idx = np.searchsorted(price_index, target_ms, side="left")
 
-    if end_idx <= start_idx:
-        return 0, 0, 0.0, 0.0
+        if idx >= len(price_values):
+            continue
 
-    forward_prices = price_values[start_idx:end_idx]
+        fwd_price = price_values[idx]
+        long_bps = float((fwd_price - mid_price) / mid_price * 10_000)
+        short_bps = float((mid_price - fwd_price) / mid_price * 10_000)
 
-    # Best achievable P&L in bps (using max/min of forward prices)
-    best_long_bps = float((np.max(forward_prices) - mid_price) / mid_price * 10_000)
-    best_short_bps = float((mid_price - np.min(forward_prices)) / mid_price * 10_000)
+        if long_bps > fee_bps:
+            long_profitable = True
+        if short_bps > fee_bps:
+            short_profitable = True
 
-    label_long = 1 if best_long_bps > fee_bps else 0
-    label_short = 1 if best_short_bps > fee_bps else 0
+        if offset_ms == 120_000:
+            fwd_2m_long_bps = long_bps
+            fwd_2m_short_bps = short_bps
 
-    return label_long, label_short, best_long_bps, best_short_bps
+    return (
+        1 if long_profitable else 0,
+        1 if short_profitable else 0,
+        fwd_2m_long_bps,
+        fwd_2m_short_bps,
+    )
 
 
 async def build_dataset(symbol: str, days: int, sample_ms: int = 1000, fee_bps: float = FEE_BPS):
@@ -220,8 +239,8 @@ async def build_dataset(symbol: str, days: int, sample_ms: int = 1000, fee_bps: 
                             **{name: float(feat[i]) for i, name in enumerate(FEATURE_NAMES)},
                             "label_long": ll,
                             "label_short": ls,
-                            "best_long_bps": blb,
-                            "best_short_bps": bsb,
+                            "fwd_2m_long_bps": blb,
+                            "fwd_2m_short_bps": bsb,
                         })
             last_sample_ms = ts_ms
 
@@ -241,8 +260,8 @@ async def build_dataset(symbol: str, days: int, sample_ms: int = 1000, fee_bps: 
     print(f"  Total samples:   {len(df):,}")
     print(f"  Long profitable: {n_long:,} ({n_long/len(df)*100:.1f}%)")
     print(f"  Short profitable:{n_short:,} ({n_short/len(df)*100:.1f}%)")
-    print(f"  Mean best long:  {df['best_long_bps'].mean():.2f} bps")
-    print(f"  Mean best short: {df['best_short_bps'].mean():.2f} bps")
+    print(f"  Mean 2m fwd long:  {df['fwd_2m_long_bps'].mean():.2f} bps")
+    print(f"  Mean 2m fwd short: {df['fwd_2m_short_bps'].mean():.2f} bps")
 
     # Save
     os.makedirs("data", exist_ok=True)
