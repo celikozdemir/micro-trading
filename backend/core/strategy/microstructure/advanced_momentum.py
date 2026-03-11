@@ -153,10 +153,13 @@ class AdvancedMomentumStrategy:
         self.ml_enabled: bool = ml_cfg.get("enabled", False)
         self.ml_threshold: float = ml_cfg.get("threshold", 0.55)
         self._ml_scorer = ml_scorer or (MLScorer(ml_cfg.get("model_dir", "models")) if self.ml_enabled else None)
+        # Always run feature extractor — accumulates training data even with ML disabled
         self._feature_extractor = FeatureExtractor(
             sigma_fast_halflife_ms=float(s.get("sigma_fast_halflife_ms", 500)),
             sigma_slow_halflife_ms=float(s.get("sigma_slow_halflife_ms", 45000)),
-        ) if self.ml_enabled else None
+        )
+        # Buffer for entry signal feature snapshots (consumed by paper_trader)
+        self.entry_signal_buffer: list[dict] = []
         # ───────────────────────────────────────────────────────────────
 
         # Determine which symbols we care about
@@ -239,12 +242,11 @@ class AdvancedMomentumStrategy:
         state = self._get_state(bt.symbol)
         state.last_book = bt
 
-        if self._feature_extractor is not None:
-            self._feature_extractor.on_book_tick(
-                bt.symbol, bt.timestamp_exchange_ms,
-                float(bt.bid_price), float(bt.bid_qty),
-                float(bt.ask_price), float(bt.ask_qty),
-            )
+        self._feature_extractor.on_book_tick(
+            bt.symbol, bt.timestamp_exchange_ms,
+            float(bt.bid_price), float(bt.bid_qty),
+            float(bt.ask_price), float(bt.ask_qty),
+        )
 
         # Update EWMA vol with actual mid price (most accurate)
         self._update_ewma(state, float(bt.mid_price), bt.timestamp_exchange_ms, bt.symbol)
@@ -266,11 +268,10 @@ class AdvancedMomentumStrategy:
         notional = float(at.qty * at.price)
         is_buy_aggressor = not at.is_buyer_maker
 
-        if self._feature_extractor is not None:
-            self._feature_extractor.on_agg_trade(
-                at.symbol, now_ms,
-                float(at.price), float(at.qty), is_buy_aggressor,
-            )
+        self._feature_extractor.on_agg_trade(
+            at.symbol, now_ms,
+            float(at.price), float(at.qty), is_buy_aggressor,
+        )
 
         p = self.sym_params.get(at.symbol)
         if not p:
@@ -515,12 +516,16 @@ class AdvancedMomentumStrategy:
             return
         # ───────────────────────────────────────────────────────────────
 
-        # ── ML Confidence Gate ────────────────────────────────────────
-        # If ML scoring is enabled and models are loaded, require
-        # P(profitable) > threshold. Graceful fallback if no model.
-        if self.ml_enabled and self._ml_scorer is not None and self._feature_extractor is not None:
-            features = self._feature_extractor.extract(symbol, now_ms)
-            if features is not None:
+        # ── Feature snapshot + ML gate ────────────────────────────────
+        features = self._feature_extractor.extract(symbol, now_ms)
+        if features is not None:
+            self.entry_signal_buffer.append({
+                "symbol": symbol,
+                "side": side,
+                "entry_time_ms": now_ms,
+                "features": features.tolist(),
+            })
+            if self.ml_enabled and self._ml_scorer is not None:
                 should_enter, confidence = self._ml_scorer.should_enter(features, direction)
                 if not should_enter:
                     return

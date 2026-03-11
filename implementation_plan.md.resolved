@@ -1,0 +1,170 @@
+# Strategy Redesign: From Rule-Based to Intelligent Trading
+
+## Why the Current Approach Fails
+
+### The Core Problem
+Our strategy is a **static rule-based system** trying to play a **dynamic adversarial game**. Every threshold (AFI 0.45, OBI 0.15, Intensity 4×) is a fixed number chosen by a human. The market adapts; our thresholds don't.
+
+### Specific Failure Modes
+
+| Problem | Why It Loses |
+| :--- | :--- |
+| **Static thresholds** | A "good" AFI of 0.45 at 3am Tokyo is noise at 2pm NY. Market microstructure changes hourly. |
+| **EMA trend filters are lagging** | By the time Short(2s) < Slow(20s) < Macro(15m) aligns, the move is already priced in. We enter late and exit at the mean. |
+| **Binary gates** | Every gate is pass/fail. A burst with AFI=0.44 and OBI=0.30 is rejected, while AFI=0.46 and OBI=0.16 passes — even though the second signal is weaker overall. |
+| **No memory** | We don't learn from the 200+ losing trades we've already taken. Each trade is independent. |
+| **Short-only bias** | We're only playing one side of the book, cutting our opportunity set in half. |
+| **Fee drag at micro-timescale** | 4 bps round-trip on a 12 bps target means fees eat 33% of every win. At these timescales, the edge must be enormous to overcome fees. |
+
+> [!CAUTION]
+> **The fundamental issue**: We're trying to predict 10-second price moves using indicators that are either too fast (noise) or too slow (stale). There is no "sweet spot" for static EMA parameters — the market's volatility regime shifts continuously.
+
+---
+
+## Proposed Architecture: Three Pillars
+
+### Pillar 1: ML Signal Scoring (Replace Binary Gates)
+
+Instead of 6 binary pass/fail gates, train a **lightweight classifier** that outputs a **probability of profitable trade** given the current microstructure snapshot.
+
+#### Feature Vector (per tick)
+```python
+features = [
+    afi,                          # aggressive flow imbalance (-1 to +1)
+    obi,                          # order book imbalance (-1 to +1)
+    intensity_ratio,              # current_vol / avg_vol
+    vol_expansion,                # sigma_fast / sigma_slow
+    mid_move_bps,                 # recent price displacement
+    spread_bps,                   # current spread
+    book_depth_ratio,             # bid_depth / ask_depth (top 5 levels)
+    trade_imbalance_1s,           # buy_vol - sell_vol in last 1s
+    trade_imbalance_5s,           # buy_vol - sell_vol in last 5s
+    vwap_deviation_bps,           # mid vs 1-min VWAP
+    time_of_day_sin,              # cyclical encoding of UTC hour
+    time_of_day_cos,
+    recent_volatility_regime,     # rolling 5m realized vol percentile
+]
+```
+
+#### Model Choice
+- **XGBoost / LightGBM** (not deep learning): Fast inference (<1ms), interpretable feature importances, works well with tabular data and small datasets.
+- **Label**: `1` if the trade would have been profitable (gross_pnl_bps > fees), `0` otherwise.
+- **Training Data**: Your TimescaleDB already has months of tick data. Label every potential entry point by simulating the forward P&L.
+- **Threshold**: Only trade when [P(profit) > 0.60](file:///Users/celikozdemir/Projects/algo-trading/workers/paper_trader.py#59-284) (tunable).
+
+#### Why This Beats Static Gates
+- Captures **non-linear interactions** (high AFI + low spread + high intensity = strong signal, even if OBI is mediocre).
+- **Adapts** to different market regimes through periodic retraining.
+- Outputs a **confidence score**, not a binary decision — you can size positions by confidence.
+
+---
+
+### Pillar 2: Adaptive Parameter Tuning (Online Learning)
+
+Instead of manually tuning TP/SL/hold, use a **contextual bandit** or **Bayesian optimization** loop.
+
+#### How It Works
+1. **Before each trade**: The model selects TP/SL/max_hold from a set of candidate "arms" based on the current volatility regime.
+2. **After each trade**: Update the reward estimate for the chosen arm.
+3. **Over time**: The system learns that in high-vol regimes, wider bands (20/10) work better; in low-vol, tighter bands (8/5) are optimal.
+
+#### Implementation Options
+
+| Approach | Complexity | Speed |
+| :--- | :--- | :--- |
+| **Simple**: Volatility-bucketed lookup table (3 regimes × 3 param sets) | Low | Immediate |
+| **Medium**: Thompson Sampling over TP/SL grid | Medium | ~1 week |
+| **Advanced**: Gaussian Process Bayesian Optimization | High | ~2 weeks |
+
+**Recommendation**: Start with the **simple volatility-bucketed approach** — it gives 80% of the benefit with 10% of the complexity.
+
+```python
+# Example: Regime-adaptive parameters
+if realized_vol_5m < percentile_25:
+    tp, sl, hold = 8, 5, 10000    # Low vol: tight and fast
+elif realized_vol_5m < percentile_75:
+    tp, sl, hold = 15, 8, 20000   # Medium vol: balanced
+else:
+    tp, sl, hold = 25, 12, 30000  # High vol: wide and patient
+```
+
+---
+
+### Pillar 3: Multi-Strategy Ensemble
+
+Instead of one strategy trying to do everything, run **multiple independent strategies** and let a **portfolio allocator** decide which ones trade.
+
+#### Strategy Roster
+
+| Strategy | Edge | When It Works |
+| :--- | :--- | :--- |
+| **Burst Momentum** (current) | Ride aggressive flow | Trending micro-regimes |
+| **Post-Sweep Reversion** (existing) | Fade overextended sweeps | After liquidation cascades |
+| **Funding Rate Arb** (new) | Short when funding > 0.03% | Overheated longs |
+| **Spread Capture** (new) | Post limit orders at spread edges | Low-vol, wide-spread periods |
+
+#### Ensemble Logic
+- Each strategy independently generates signals.
+- A **meta-model** (or simple scoring) ranks signals by expected Sharpe.
+- Only the top-ranked signal executes. No conflicting positions.
+
+---
+
+## Longer Timeframes: Should We Go There?
+
+### The Case FOR Longer Timeframes (5m–1h holds)
+
+| Pro | Detail |
+| :--- | :--- |
+| **Fee impact shrinks** | 4 bps on a 50 bps target = 8% drag (vs 33% on 12 bps) |
+| **Signal quality improves** | More data points per decision → better S/N ratio |
+| **Less competition** | HFT firms dominate sub-second. 5-minute momentum has fewer alpha-decayed participants |
+| **Trend persistence** | Crypto trends persist at 5m–1h scales due to retail momentum and funding rate reflexivity |
+
+### The Case AGAINST
+
+| Con | Detail |
+| :--- | :--- |
+| **Capital efficiency** | Locked position for minutes/hours |
+| **Overnight risk** | Can't close during exchange maintenance |
+| **Larger drawdowns** | 50 bps SL × 10 trades = significant |
+
+### Verdict
+> [!IMPORTANT]
+> **Moving to 1–5 minute holds is strongly recommended.** The fee math alone makes sub-15-second scalping nearly impossible without co-located infrastructure. A 5-minute momentum strategy with a 50 bps target only needs 4 bps in fees — that's 8% drag vs. 33%. The required win rate drops from 58% to ~45%.
+
+---
+
+## Recommended Implementation Roadmap
+
+### Phase 1: Quick Wins (1–2 days)
+1. **Volatility-Regime Adaptive Parameters**: Replace static TP/SL with 3-bucket lookup based on 5-minute realized volatility.
+2. **Extend Hold Time to 2–5 minutes**: Target 30–50 bps moves. Stop fighting the fee structure.
+3. **Remove Short-Only Constraint**: Trade both sides based on signal direction.
+4. **Add Funding Rate Filter**: Only short when funding rate > 0 (market is paying you to short).
+
+### Phase 2: ML Signal Scoring (1 week)
+1. **Label Historical Data**: For every tick in TimescaleDB, compute the forward 5-minute return.
+2. **Train XGBoost Classifier**: Features → P(profitable trade).
+3. **Backtest**: Compare ML-scored entries vs rule-based entries on held-out data.
+4. **Deploy**: Replace binary gates with `if model.predict_proba(features) > threshold`.
+
+### Phase 3: Online Adaptation (2 weeks)
+1. **Implement Thompson Sampling** for TP/SL selection.
+2. **Add regime detection** (HMM or simple vol clustering).
+3. **A/B test**: Run ML strategy alongside rule-based on paper, compare after 1000 trades.
+
+### Phase 4: Multi-Strategy Ensemble (1 month)
+1. **Activate PostSweepReversion** (already implemented but dormant).
+2. **Build Funding Rate strategy**.
+3. **Meta-allocator**: Simple Sharpe-weighted portfolio allocation across strategies.
+
+---
+
+## Key Design Decisions Needed
+
+1. **Timeframe**: Commit to 2–5 minute holds? This fundamentally changes the strategy character.
+2. **ML Complexity**: Start with XGBoost (fast, interpretable) or jump to an LSTM/Transformer (more powerful, harder to debug)?
+3. **Both Sides**: Remove `short_only` and trade both long and short?
+4. **Capital**: Current position sizes (0.001 BTC, 0.01 ETH) are tiny. Are you willing to increase sizing once the strategy proves profitable?
+5. **Infrastructure**: For ML inference, do you want to run the model on the Japanese server or use a separate inference service?

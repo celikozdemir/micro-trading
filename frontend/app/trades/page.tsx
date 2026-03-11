@@ -73,7 +73,7 @@ export default function TradesPage() {
   const livePosEntries = livePositionsFrom(liveState)
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
+    <div className="p-6 w-full space-y-6">
       <div>
         <h1 className="text-lg font-semibold text-foreground">Paper Trades</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Live strategy decisions — no real orders placed</p>

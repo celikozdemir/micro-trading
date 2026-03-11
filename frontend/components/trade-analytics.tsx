@@ -109,14 +109,14 @@ export function TradeBreakdownCard({ symbol, days = 7 }: Props) {
       ) : (
         <>
           {/* Exit reason pie chart */}
-          <div className="flex items-center gap-4">
-            <div className="w-32 h-32 flex-shrink-0">
+          <div className="flex justify-center">
+            <div className="w-48 h-44">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
                     data={pieData}
-                    innerRadius={28}
-                    outerRadius={50}
+                    innerRadius={32}
+                    outerRadius={56}
                     paddingAngle={2}
                     dataKey="value"
                     isAnimationActive={false}
@@ -127,15 +127,13 @@ export function TradeBreakdownCard({ symbol, days = 7 }: Props) {
                   </Pie>
                   <Legend
                     iconSize={8}
-                    wrapperStyle={{ fontSize: 10 }}
+                    wrapperStyle={{ fontSize: 10, color: 'rgba(255,255,255,0.7)' }}
                   />
                 </PieChart>
               </ResponsiveContainer>
             </div>
-            <div className="flex-1 space-y-3">
-              <BreakdownTable title="By Exit Reason" data={breakdown.by_exit_reason} />
-            </div>
           </div>
+          <BreakdownTable title="By Exit Reason" data={breakdown.by_exit_reason} />
 
           <BreakdownTable title="By Side" data={breakdown.by_side} />
           {!symbol && <BreakdownTable title="By Symbol" data={breakdown.by_symbol} />}
@@ -170,23 +168,23 @@ export function HourlyPerformanceCard({ symbol, days = 7 }: Props) {
       </div>
 
       {!hasData ? (
-        <div className="h-40 flex items-center justify-center text-xs text-muted-foreground font-mono">
+        <div className="h-64 flex items-center justify-center text-xs text-muted-foreground font-mono">
           No trade data yet
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={hourly} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={hourly} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.4} />
             <XAxis
               dataKey="hour"
               tickFormatter={(h: number) => `${h}h`}
-              tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+              tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.7)' }}
               axisLine={false}
               tickLine={false}
             />
             <YAxis
               tickFormatter={(v: number) => `$${v.toFixed(2)}`}
-              tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+              tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.7)' }}
               axisLine={false}
               tickLine={false}
               width={50}

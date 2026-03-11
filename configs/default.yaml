@@ -54,7 +54,7 @@ strategy:
   
   # ── ML Signal Scoring (Phase 2) ─────────────────────────────────
   ml:
-    enabled: false
+    enabled: true                # Feature logging always active; ML gate activates when models exist
     threshold: 0.55
     model_dir: models
   # ──────────────────────────────────────────────────────────────────

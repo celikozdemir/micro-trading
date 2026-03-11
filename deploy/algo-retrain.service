@@ -1,0 +1,14 @@
+[Unit]
+Description=Algo ML Auto-Retrainer (trains from live entry signals)
+After=network.target docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/algo-trading
+ExecStart=/home/ubuntu/algo-trading/.venv/bin/python -m workers.auto_retrain --min-samples 100 --threshold 0.55 --model-dir models
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

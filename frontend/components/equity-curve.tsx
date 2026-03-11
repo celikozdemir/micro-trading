@@ -87,13 +87,13 @@ export default function EquityCurve({ symbol, days = 7 }: Props) {
             <XAxis
               dataKey="ts"
               tickFormatter={fmtShortDate}
-              tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+              tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.7)' }}
               axisLine={false}
               tickLine={false}
             />
             <YAxis
               tickFormatter={(v: number) => `$${v.toFixed(2)}`}
-              tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+              tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.7)' }}
               axisLine={false}
               tickLine={false}
               width={60}

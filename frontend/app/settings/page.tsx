@@ -222,7 +222,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto space-y-5">
+    <div className="p-6 w-full max-w-5xl space-y-5">
       <div>
         <h1 className="text-lg font-semibold text-foreground">Settings</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Strategy and risk parameters</p>

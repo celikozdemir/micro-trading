@@ -37,7 +37,9 @@ from backend.core.strategy.microstructure.advanced_momentum import (
     BacktestTrade,
     AdvancedMomentumStrategy,
 )
+from backend.core.ml.features import FEATURE_NAMES
 from backend.db.session import AsyncSessionLocal, Base, engine
+from backend.models.entry_signal import EntrySignal
 from backend.models.paper_trade import PaperTrade
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -173,14 +175,30 @@ class PaperTrader:
             await self._flush()
 
     async def _flush(self) -> None:
-        if not self._trade_buffer:
+        has_trades = bool(self._trade_buffer)
+        has_signals = bool(self._strategy.entry_signal_buffer)
+        if not has_trades and not has_signals:
             return
 
-        batch, self._trade_buffer = self._trade_buffer, []
+        trade_batch, self._trade_buffer = self._trade_buffer, []
+        signal_batch = list(self._strategy.entry_signal_buffer)
+        self._strategy.entry_signal_buffer.clear()
 
         async with AsyncSessionLocal() as session:
             try:
-                for t in batch:
+                # Flush entry signal features
+                for sig in signal_batch:
+                    feats = sig["features"]
+                    row = EntrySignal(
+                        symbol=sig["symbol"],
+                        side=sig["side"],
+                        entry_time_ms=sig["entry_time_ms"],
+                        **{FEATURE_NAMES[i]: feats[i] for i in range(len(FEATURE_NAMES))},
+                    )
+                    session.add(row)
+
+                # Flush completed trades + link outcomes to entry signals
+                for t in trade_batch:
                     session.add(
                         PaperTrade(
                             symbol=t.symbol,
@@ -203,12 +221,38 @@ class PaperTrader:
                         self._total_wins += 1
                     self._total_net_pnl += float(t.net_pnl_usd)
 
+                    # Link outcome back to the entry signal row
+                    await session.execute(
+                        text("""
+                            UPDATE entry_signals
+                            SET exit_reason = :exit_reason,
+                                gross_pnl_bps = :gross_pnl_bps,
+                                net_pnl_usd = :net_pnl_usd,
+                                hold_ms = :hold_ms,
+                                profitable = :profitable
+                            WHERE symbol = :symbol
+                              AND side = :side
+                              AND entry_time_ms = :entry_time_ms
+                              AND exit_reason IS NULL
+                            """),
+                        {
+                            "exit_reason": t.exit_reason,
+                            "gross_pnl_bps": float(t.gross_pnl_bps),
+                            "net_pnl_usd": float(t.net_pnl_usd),
+                            "hold_ms": t.hold_ms,
+                            "profitable": float(t.gross_pnl_bps) > 0,
+                            "symbol": t.symbol,
+                            "side": t.side,
+                            "entry_time_ms": t.entry_time_ms,
+                        },
+                    )
+
                 await session.commit()
             except Exception as e:
                 await session.rollback()
-                # Return trades to buffer so they aren't lost
-                self._trade_buffer = batch + self._trade_buffer
-                log.error("Paper trade flush failed", error=str(e))
+                self._trade_buffer = trade_batch + self._trade_buffer
+                self._strategy.entry_signal_buffer = signal_batch + self._strategy.entry_signal_buffer
+                log.error("Flush failed", error=str(e))
 
     # ------------------------------------------------------------------ #
     # Live state file (read by FastAPI /api/live endpoint)                #
