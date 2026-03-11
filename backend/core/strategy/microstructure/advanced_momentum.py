@@ -544,20 +544,15 @@ class AdvancedMomentumStrategy:
         p = self.sym_params.get(symbol, {})
         vol = state.realized_vol_5m
         
-        # Regime boundaries (average absolute return in bps per tick)
-        # These are empirically reasonable for BTC/ETH futures
-        low_vol_threshold = 0.3   # Very quiet market
-        high_vol_threshold = 1.5  # Volatile market
+        low_vol_threshold = 0.3
+        high_vol_threshold = 1.5
         
         if vol < low_vol_threshold:
-            # Low vol: tight targets, fast exits — small, reliable moves
-            return (15.0, 8.0, 60_000)    # 1 min hold, 15 bps TP
+            return (8.0, 5.0, 45_000)     # 45s hold, tight scalp
         elif vol < high_vol_threshold:
-            # Medium vol: balanced — the sweet spot for momentum
-            return (30.0, 15.0, 120_000)  # 2 min hold, 30 bps TP
+            return (15.0, 8.0, 90_000)    # 90s hold, moderate
         else:
-            # High vol: wide bands, patient — let the move develop
-            return (50.0, 25.0, 300_000)  # 5 min hold, 50 bps TP
+            return (30.0, 15.0, 180_000)  # 3 min hold, wide
 
     def _check_exit(self, symbol: str, now_ms: int, book: BookTick) -> None:
         state = self._get_state(symbol)
@@ -592,32 +587,8 @@ class AdvancedMomentumStrategy:
             # Update trailing high watermark
             if pnl_f > pos.high_watermark_bps:
                 pos.high_watermark_bps = pnl_f
-            # Trailing stop: once peak >= trigger, stop trails trail_bps below the peak
-            # Use regime-proportional trail trigger (30% of TP target)
             trail_trigger = regime_tp * 0.4
-            trail_distance = regime_tp * 0.2
-            if pos.high_watermark_bps >= trail_trigger:
-                is_stopped = pnl_f <= pos.high_watermark_bps - trail_distance
-            else:
-                is_stopped = pnl_bps <= -dynamic_sl
-            if pnl_bps >= dynamic_tp:
-                exit_reason = "take_profit"
-            elif is_stopped:
-                exit_reason = "stop_loss"
-            elif hold_ms >= regime_hold: # Use regime-adaptive max_hold_ms
-                exit_reason = "timeout"
-            if exit_reason:
-                # Lift the ASK to exit (Taker buy-back to close short)
-                exit_fill = self.fill_model.fill_exit_long(book.bid_price, book.mid_price)
-                gross_pnl_bps = (exit_fill.price - pos.entry_price) / pos.entry_mid * 10000
-                gross_pnl_usd = (exit_fill.price - pos.entry_price) * pos.qty
-        else:  # SELL
-            pnl_bps = (pos.entry_price - book.ask_price) / pos.entry_mid * 10000
-            pnl_f = float(pnl_bps)
-            if pnl_f > pos.high_watermark_bps:
-                pos.high_watermark_bps = pnl_f
-            trail_trigger = regime_tp * 0.4
-            trail_distance = regime_tp * 0.2
+            trail_distance = regime_tp * 0.25
             if pos.high_watermark_bps >= trail_trigger:
                 is_stopped = pnl_f <= pos.high_watermark_bps - trail_distance
             else:
@@ -629,7 +600,27 @@ class AdvancedMomentumStrategy:
             elif hold_ms >= regime_hold:
                 exit_reason = "timeout"
             if exit_reason:
-                # Lift the ASK to exit (Taker buy-back to close short)
+                exit_fill = self.fill_model.fill_exit_long(book.bid_price, book.mid_price)
+                gross_pnl_bps = (exit_fill.price - pos.entry_price) / pos.entry_mid * 10000
+                gross_pnl_usd = (exit_fill.price - pos.entry_price) * pos.qty
+        else:  # SELL
+            pnl_bps = (pos.entry_price - book.ask_price) / pos.entry_mid * 10000
+            pnl_f = float(pnl_bps)
+            if pnl_f > pos.high_watermark_bps:
+                pos.high_watermark_bps = pnl_f
+            trail_trigger = regime_tp * 0.4
+            trail_distance = regime_tp * 0.25
+            if pos.high_watermark_bps >= trail_trigger:
+                is_stopped = pnl_f <= pos.high_watermark_bps - trail_distance
+            else:
+                is_stopped = pnl_bps <= -dynamic_sl
+            if pnl_bps >= dynamic_tp:
+                exit_reason = "take_profit"
+            elif is_stopped:
+                exit_reason = "stop_loss"
+            elif hold_ms >= regime_hold:
+                exit_reason = "timeout"
+            if exit_reason:
                 exit_fill = self.fill_model.fill_exit_short(book.ask_price, book.mid_price)
                 gross_pnl_bps = (pos.entry_price - exit_fill.price) / pos.entry_mid * 10000
                 gross_pnl_usd = (pos.entry_price - exit_fill.price) * pos.qty

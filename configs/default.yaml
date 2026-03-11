@@ -10,73 +10,72 @@ data_streams:
 strategy:
   type: burst_momentum
   window_ms: 250             # burst detection window for AFI / trade-count (ms)
-  trade_count_trigger: 3     # Reduced floor since OBI/AFI/Macro are more selective
-  move_bps_trigger: 0.5      # Physical move required for burst confirmation
+  trade_count_trigger: 5     # min trades in window — filters ambient noise
+  move_bps_trigger: 1.5      # global floor — only react to real moves, not noise
 
   # ── Three-gate signal filters (all must fire simultaneously) ──────
-  intensity_spike_mult: 4.0     # Global floor (BTC/ETH have specific overrides below)
+  intensity_spike_mult: 6.0     # 1s notional must be 6× the 60s avg
 
   # Gate 2: Volatility expansion (EWMA ratio)
-  sigma_fast_halflife_ms: 500    # reacts within one burst duration (~500ms)
+  sigma_fast_halflife_ms: 500
   sigma_slow_halflife_ms: 45000
-  vol_expansion_ratio: 1.5      # sigma_fast must be 1.5× background to trigger
+  vol_expansion_ratio: 2.0      # require 2× background vol, was 1.5
 
   # Gate 3: Notional Aggressive Flow Imbalance
-  afi_threshold: 0.45
+  afi_threshold: 0.55            # require strong directional conviction, was 0.45
 
   # Gate 4: Micro-regime crossover filter
-  trend_halflife_ms: 20000         # 20s slow micro-EMA (regime reference)
-  short_trend_halflife_ms: 2000    # 2s fast micro-EMA (burst-speed momentum)
-  trend_warmup_ms: 30000           # 30s warmup is enough for 20s EWMA to stabilize
+  trend_halflife_ms: 20000
+  short_trend_halflife_ms: 2000
+  trend_warmup_ms: 30000
 
   # ── Macro Regime Parameters (15m filter) ────────────────────────
-  macro_trend_halflife_ms: 900000  # 15-minute macro regime
-  macro_trend_warmup_ms: 600000    # 10-minute stabilization before gate fires
+  macro_trend_halflife_ms: 900000
+  macro_trend_warmup_ms: 600000
   
   # ── Advanced Momentum Parameters ────────────────────────────────
-  obi_threshold: 0.15
-  short_only: false              # ← BIDIRECTIONAL: trade both longs and shorts
+  obi_threshold: 0.20             # was 0.15
+  short_only: false
   adaptive_vol_multiplier: 0.0
-  funding_rate_filter: true      # Skip longs when funding > 0.03%, shorts when < -0.03%
+  funding_rate_filter: true
   # ──────────────────────────────────────────────────────────────────
   
   # ── Per-Symbol Overrides ──────────────────────────────────────────
   symbol_overrides:
     BTCUSDT:
-      obi_threshold: 0.18           
-      intensity_spike_mult: 4.0     
-      move_bps_trigger: 0.6
+      obi_threshold: 0.22           # was 0.18
+      intensity_spike_mult: 6.0     # was 4.0
+      move_bps_trigger: 2.0         # was 0.6 — only real BTC moves
     ETHUSDT:
-      obi_threshold: 0.12           
-      intensity_spike_mult: 8.0     
-      move_bps_trigger: 1.0
+      obi_threshold: 0.18           # was 0.12
+      intensity_spike_mult: 10.0    # was 8.0
+      move_bps_trigger: 2.5         # was 1.0 — only real ETH moves
   # ──────────────────────────────────────────────────────────────────
   
   # ── ML Signal Scoring (Phase 2) ─────────────────────────────────
   ml:
-    enabled: false               # Set to true after training models
-    threshold: 0.55              # P(profitable) must exceed this to enter
-    model_dir: models            # Directory containing signal_long.json / signal_short.json
+    enabled: false
+    threshold: 0.55
+    model_dir: models
   # ──────────────────────────────────────────────────────────────────
 
   entry_qty:
     BTCUSDT: 0.001
     ETHUSDT: 0.01
   exit:
-    # NOTE: These are now FALLBACK values only.
-    # The strategy uses regime-adaptive TP/SL/hold based on 5-min realized vol:
-    #   Low vol:    TP=15,  SL=8,   hold=60s
-    #   Medium vol: TP=30,  SL=15,  hold=120s
-    #   High vol:   TP=50,  SL=25,  hold=300s
-    # Trail trigger/distance are also regime-proportional (40%/20% of TP).
-    max_hold_ms: 120000        # 2 min default (overridden by regime)
-    take_profit_bps: 30.0      # Medium-vol default (overridden by regime)
-    stop_loss_bps: 15.0
-    trail_trigger_bps: 12.0    # Legacy: now regime-proportional
-    trail_bps: 6.0             # Legacy: now regime-proportional
-  cooldown_ms: 2000           # 2s: prevents re-entering the same burst 3-4 times
+    # Regime-adaptive TP/SL/hold (set in strategy code):
+    #   Low vol:    TP=8,   SL=5,   hold=45s
+    #   Medium vol: TP=15,  SL=8,   hold=90s
+    #   High vol:   TP=30,  SL=15,  hold=180s
+    # Trail: trigger at 40% of TP, distance 25% of TP
+    max_hold_ms: 90000          # fallback
+    take_profit_bps: 15.0       # fallback
+    stop_loss_bps: 8.0          # fallback
+    trail_trigger_bps: 6.0      # fallback
+    trail_bps: 3.0              # fallback
+  cooldown_ms: 5000             # 5s cooldown — was 2s, prevent rapid re-entry
 risk:
-  max_trades_per_min: 60
+  max_trades_per_min: 20        # was 60 — hard cap on overtrading
   daily_loss_usd: 50
   max_consecutive_losses: 5
   max_spread_bps: 6
